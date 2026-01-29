@@ -151,8 +151,8 @@ The JSON config file supports:
 | DOWN | 1 | Move down |
 | LEFT | 2 | Move left |
 | RIGHT | 3 | Move right |
-| COLLECT | 4 | Collect key/reward at current position |
-| USE_KEY | 5 | Use held key on adjacent door |
+
+Keys and rewards are collected automatically when the agent steps onto them. Doors are opened automatically when the agent moves into them while holding a key.
 
 ## Observations
 
