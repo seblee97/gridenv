@@ -4,7 +4,7 @@ GridWorld Environment - Main Gymnasium environment implementation.
 
 from enum import IntEnum
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Set, Tuple, Union
+from typing import Any, Dict, List, Optional, Tuple, Union
 
 import gymnasium as gym
 import numpy as np
@@ -129,7 +129,6 @@ class GridWorldEnv(gym.Env):
         self._room_cues: Dict[int, List[KeyColor]] = {}  # room_id -> cue vector
         self._room_correct_keys: Dict[int, KeyColor] = {}  # room_id -> correct key
         self._current_room_index: int = 0  # Index into key_pairs list
-        self._rooms_completed: List[int] = []  # List of completed room indices
 
         # Define action and observation spaces
         self.action_space = spaces.Discrete(4)
@@ -206,7 +205,6 @@ class GridWorldEnv(gym.Env):
         self._room_cues = {}
         self._room_correct_keys = {}
         self._current_room_index = 0
-        self._rooms_completed = []
         self._posner_cues = None
         self._correct_key = None
 
