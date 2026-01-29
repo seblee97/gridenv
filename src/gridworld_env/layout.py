@@ -31,7 +31,7 @@ import json
 import textwrap
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Dict, List, Optional, Set, Tuple, Union
+from typing import Dict, List, Optional, Tuple, Union
 
 from gridworld_env.objects import Door, Key, KeyColor, KeyPair, Reward
 
