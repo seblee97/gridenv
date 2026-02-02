@@ -199,8 +199,10 @@ def parse_layout_string(
                 doors.append(Door(position=(row, col), correct_key_color=correct_color))
             elif char == ".":
                 pass  # Empty floor
-            elif char == " ":
-                grid[row][col] = True  # Treat space as wall
+            else:
+                raise ValueError(
+                    f"Unexpected character '{char}' at row {row}, col {col}"
+                )
 
             col += 1
 
