@@ -117,10 +117,10 @@ class GridWorldEnv(gym.Env):
         self.start_pos_mode = start_pos_mode
 
         # Validate obs_mode
-        if obs_mode not in ("symbolic", "pixels", "both"):
+        if obs_mode not in ("symbolic", "symbolic_minimal", "pixels", "both"):
             raise ValueError(
-                f"obs_mode must be 'symbolic', 'pixels', or 'both', "
-                f"got '{obs_mode}'"
+                f"obs_mode must be 'symbolic', 'symbolic_minimal', 'pixels', "
+                f"or 'both', got '{obs_mode}'"
             )
 
         # Validate start_pos_mode
@@ -194,6 +194,62 @@ class GridWorldEnv(gym.Env):
                 ),  # Each feature: 0=none, 1=red, 2=blue
             })
 
+        # Build symbolic_minimal observation space
+        # Exclude keys that are part of key_pairs from standalone count
+        paired_key_positions = set()
+        for kp in self._base_layout.key_pairs:
+            for k in kp.keys:
+                paired_key_positions.add(k.position)
+        self._paired_key_positions = paired_key_positions
+        self._n_keys = sum(
+            1 for k in self._base_layout.keys if k.position not in paired_key_positions
+        )
+        self._n_keypair_keys = sum(len(kp.keys) for kp in self._base_layout.key_pairs)
+        self._n_doors = len(self._base_layout.doors)
+        self._n_rewards = len(self._base_layout.rewards)
+        n_object_bits = self._n_keys + self._n_keypair_keys + self._n_doors + self._n_rewards
+
+        if flatten_obs:
+            symbolic_minimal_space = spaces.Box(
+                low=0.0,
+                high=1.0,
+                shape=(2 + 3 + n_object_bits + posner_cue_size,),
+                dtype=np.float32,
+            )
+        else:
+            minimal_dict = {
+                "agent_pos": spaces.Box(
+                    low=0,
+                    high=max(grid_shape),
+                    shape=(2,),
+                    dtype=np.int32,
+                ),
+                "held_key": spaces.Discrete(3),
+                "posner_cue": spaces.Box(
+                    low=0,
+                    high=2,
+                    shape=(posner_num_features,) if posner_mode else (1,),
+                    dtype=np.int32,
+                ),
+            }
+            if self._n_keys > 0:
+                minimal_dict["keys"] = spaces.Box(
+                    low=0, high=1, shape=(self._n_keys,), dtype=np.int32,
+                )
+            if self._n_keypair_keys > 0:
+                minimal_dict["keypair_keys"] = spaces.Box(
+                    low=0, high=1, shape=(self._n_keypair_keys,), dtype=np.int32,
+                )
+            if self._n_doors > 0:
+                minimal_dict["doors"] = spaces.Box(
+                    low=0, high=1, shape=(self._n_doors,), dtype=np.int32,
+                )
+            if self._n_rewards > 0:
+                minimal_dict["rewards"] = spaces.Box(
+                    low=0, high=1, shape=(self._n_rewards,), dtype=np.int32,
+                )
+            symbolic_minimal_space = spaces.Dict(minimal_dict)
+
         # Build pixel observation space
         self._obs_cell_size = 32
         self._obs_status_height = 40
@@ -209,6 +265,8 @@ class GridWorldEnv(gym.Env):
         # Assign observation space based on obs_mode
         if obs_mode == "symbolic":
             self.observation_space = symbolic_space
+        elif obs_mode == "symbolic_minimal":
+            self.observation_space = symbolic_minimal_space
         elif obs_mode == "pixels":
             self.observation_space = pixel_space
         else:  # "both"
@@ -219,6 +277,17 @@ class GridWorldEnv(gym.Env):
 
         # Cache for random start positions (computed once from base layout)
         self._first_room_positions: Optional[List[Tuple[int, int]]] = None
+
+        # Precompute valid positions for tabular state indexing
+        self._valid_positions: List[Tuple[int, int]] = sorted(
+            (r, c)
+            for r in range(self._base_layout.height)
+            for c in range(self._base_layout.width)
+            if not self._base_layout.is_wall(r, c)
+        )
+        self._position_to_index: Dict[Tuple[int, int], int] = {
+            pos: i for i, pos in enumerate(self._valid_positions)
+        }
 
         # Rendering
         self._renderer = None
@@ -522,6 +591,8 @@ class GridWorldEnv(gym.Env):
         """Build the current observation based on obs_mode."""
         if self.obs_mode == "symbolic":
             return self._get_symbolic_observation()
+        elif self.obs_mode == "symbolic_minimal":
+            return self._get_symbolic_minimal_observation()
         elif self.obs_mode == "pixels":
             return self._get_pixel_observation()
         else:  # "both"
@@ -619,6 +690,109 @@ class GridWorldEnv(gym.Env):
             debug_info=None,
             score=None,
         )
+
+    def _get_symbolic_minimal_observation(self) -> Union[np.ndarray, Dict[str, Any]]:
+        """Build minimal symbolic observation (dynamic state only, no grid)."""
+        height = self._base_layout.height
+        width = self._base_layout.width
+
+        # Key availability (standalone keys only, excluding paired keys)
+        standalone_keys = [
+            k for k in self._layout.keys if k.position not in self._paired_key_positions
+        ]
+        keys_available = np.array(
+            [0 if k.collected else 1 for k in standalone_keys],
+            dtype=np.int32,
+        ) if self._n_keys > 0 else np.array([], dtype=np.int32)
+
+        # Key-pair key availability
+        keypair_keys_available = []
+        for kp in self._layout.key_pairs:
+            for k in kp.keys:
+                keypair_keys_available.append(0 if k.collected else 1)
+        keypair_keys_available = np.array(
+            keypair_keys_available, dtype=np.int32,
+        ) if self._n_keypair_keys > 0 else np.array([], dtype=np.int32)
+
+        # Door states
+        doors_open = np.array(
+            [1 if d.is_open else 0 for d in self._layout.doors],
+            dtype=np.int32,
+        ) if self._n_doors > 0 else np.array([], dtype=np.int32)
+
+        # Reward availability
+        rewards_available = np.array(
+            [1 if r.is_available() else 0 for r in self._layout.rewards],
+            dtype=np.int32,
+        ) if self._n_rewards > 0 else np.array([], dtype=np.int32)
+
+        if self.flatten_obs:
+            # Agent position (normalized)
+            agent_pos = np.array([
+                self._agent_pos[0] / max(1, height - 1),
+                self._agent_pos[1] / max(1, width - 1),
+            ], dtype=np.float32)
+
+            # Held key (one-hot: none, red, blue)
+            held_key = np.zeros(3, dtype=np.float32)
+            if self._held_key is None:
+                held_key[0] = 1.0
+            elif self._held_key == KeyColor.RED:
+                held_key[1] = 1.0
+            else:
+                held_key[2] = 1.0
+
+            # Posner cues (one-hot for each feature)
+            if self.posner_mode:
+                posner_cue = np.zeros(self.posner_num_features * 3, dtype=np.float32)
+                if self._posner_cues is not None:
+                    for i, cue in enumerate(self._posner_cues):
+                        offset = i * 3
+                        if cue == KeyColor.RED:
+                            posner_cue[offset + 1] = 1.0
+                        else:
+                            posner_cue[offset + 2] = 1.0
+                else:
+                    for i in range(self.posner_num_features):
+                        posner_cue[i * 3] = 1.0
+            else:
+                posner_cue = np.zeros(3, dtype=np.float32)
+                posner_cue[0] = 1.0
+
+            parts = [agent_pos, held_key]
+            for arr in (keys_available, keypair_keys_available, doors_open, rewards_available):
+                if len(arr) > 0:
+                    parts.append(arr.astype(np.float32))
+            parts.append(posner_cue)
+            return np.concatenate(parts)
+        else:
+            held_key_val = 0
+            if self._held_key == KeyColor.RED:
+                held_key_val = 1
+            elif self._held_key == KeyColor.BLUE:
+                held_key_val = 2
+
+            if self.posner_mode and self._posner_cues is not None:
+                posner_cue_vals = np.array([
+                    1 if c == KeyColor.RED else 2 for c in self._posner_cues
+                ], dtype=np.int32)
+            else:
+                posner_cue_vals = np.array([0], dtype=np.int32)
+
+            obs = {
+                "agent_pos": np.array(self._agent_pos, dtype=np.int32),
+                "held_key": held_key_val,
+                "posner_cue": posner_cue_vals,
+            }
+            if self._n_keys > 0:
+                obs["keys"] = keys_available
+            if self._n_keypair_keys > 0:
+                obs["keypair_keys"] = keypair_keys_available
+            if self._n_doors > 0:
+                obs["doors"] = doors_open
+            if self._n_rewards > 0:
+                obs["rewards"] = rewards_available
+            return obs
 
     def _build_grid_observation(self) -> np.ndarray:
         """Build grid observation showing cell types."""
@@ -780,3 +954,63 @@ class GridWorldEnv(gym.Env):
     def posner_cues(self) -> Optional[List[KeyColor]]:
         """All Posner cue features."""
         return self._posner_cues
+
+    @property
+    def state_space_size(self) -> int:
+        """Total number of discrete states for tabular RL.
+
+        Only available when posner_mode is False.
+        """
+        if self.posner_mode:
+            raise RuntimeError(
+                "state_space_size is not available with posner_mode=True"
+            )
+        n_positions = len(self._valid_positions)
+        n_binary = self._n_keys + self._n_keypair_keys + self._n_doors + self._n_rewards
+        return n_positions * 3 * (2 ** n_binary)
+
+    @property
+    def state_index(self) -> int:
+        """Current state as a unique integer index for tabular RL.
+
+        Only available when posner_mode is False and the environment has been reset.
+        """
+        if self.posner_mode:
+            raise RuntimeError(
+                "state_index is not available with posner_mode=True"
+            )
+        if self._layout is None:
+            raise RuntimeError(
+                "Environment not initialized. Call reset() first."
+            )
+
+        idx = self._position_to_index[self._agent_pos]
+
+        # Held key: 0=none, 1=red, 2=blue
+        if self._held_key is None:
+            held = 0
+        elif self._held_key == KeyColor.RED:
+            held = 1
+        else:
+            held = 2
+        idx = idx * 3 + held
+
+        # Standalone keys
+        for key in self._layout.keys:
+            if key.position not in self._paired_key_positions:
+                idx = idx * 2 + (0 if key.collected else 1)
+
+        # Key-pair keys
+        for kp in self._layout.key_pairs:
+            for key in kp.keys:
+                idx = idx * 2 + (0 if key.collected else 1)
+
+        # Doors
+        for door in self._layout.doors:
+            idx = idx * 2 + (1 if door.is_open else 0)
+
+        # Rewards
+        for reward in self._layout.rewards:
+            idx = idx * 2 + (1 if reward.is_available() else 0)
+
+        return idx

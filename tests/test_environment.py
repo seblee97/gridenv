@@ -594,7 +594,7 @@ class TestObsMode:
 
     def test_observation_in_space(self):
         """Observations are contained in their observation_space for all modes."""
-        for obs_mode in ("symbolic", "pixels", "both"):
+        for obs_mode in ("symbolic", "symbolic_minimal", "pixels", "both"):
             env = GridWorldEnv(self.SIMPLE_LAYOUT, obs_mode=obs_mode)
             obs, _ = env.reset(seed=42)
             assert env.observation_space.contains(obs), (
@@ -608,3 +608,236 @@ class TestObsMode:
         assert env._obs_renderer is not None
         env.close()
         assert env._obs_renderer is None
+
+
+class TestSymbolicMinimal:
+    """Tests for obs_mode='symbolic_minimal'."""
+
+    # Layout with keys, door, and reward
+    LAYOUT_WITH_OBJECTS = """
+    #######
+    #S....#
+    #.r...#
+    #.b...#
+    ###D###
+    #..G..#
+    #######
+    """
+    LAYOUT_CONFIG = {
+        "door_colors": {"4,3": "red"},
+        "key_pairs": [{"positions": ["2,2", "3,2"], "room_id": 0}],
+        "protected_rewards": {"4,3": ["5,3"]},
+    }
+
+    # Simple layout with no objects except a reward
+    SIMPLE_LAYOUT = """
+    #####
+    #S..#
+    #...#
+    #..G#
+    #####
+    """
+
+    def _make_env(self, flatten_obs=True):
+        from gridworld_env.layout import parse_layout_string
+        layout = parse_layout_string(self.LAYOUT_WITH_OBJECTS, self.LAYOUT_CONFIG)
+        return GridWorldEnv(layout, obs_mode="symbolic_minimal", flatten_obs=flatten_obs)
+
+    def test_flat_shape(self):
+        """Flat minimal obs has correct size: 2 + 3 + n_objects + posner_cue_size."""
+        env = self._make_env(flatten_obs=True)
+        obs, _ = env.reset(seed=42)
+        # 2 keypair keys, 1 door, 1 reward, 0 standalone keys
+        # 2 (pos) + 3 (held_key) + 2 (keypair) + 1 (door) + 1 (reward) + 3 (posner) = 12
+        assert isinstance(obs, np.ndarray)
+        assert obs.dtype == np.float32
+        assert obs.shape == (12,)
+
+    def test_flat_much_smaller_than_full(self):
+        """Minimal obs is much smaller than full symbolic."""
+        env_min = self._make_env(flatten_obs=True)
+        from gridworld_env.layout import parse_layout_string
+        layout = parse_layout_string(self.LAYOUT_WITH_OBJECTS, self.LAYOUT_CONFIG)
+        env_full = GridWorldEnv(layout, obs_mode="symbolic", flatten_obs=True)
+
+        obs_min, _ = env_min.reset(seed=42)
+        obs_full, _ = env_full.reset(seed=42)
+        assert len(obs_min) < len(obs_full)
+
+    def test_dict_keys(self):
+        """Dict minimal obs has expected keys."""
+        env = self._make_env(flatten_obs=False)
+        obs, _ = env.reset(seed=42)
+        assert isinstance(obs, dict)
+        assert "agent_pos" in obs
+        assert "held_key" in obs
+        assert "posner_cue" in obs
+        assert "keypair_keys" in obs
+        assert "doors" in obs
+        assert "rewards" in obs
+        # No standalone keys in this layout
+        assert "keys" not in obs
+        # No grid
+        assert "grid" not in obs
+
+    def test_agent_pos_changes_after_move(self):
+        """Agent position updates in minimal obs after movement."""
+        env = self._make_env(flatten_obs=False)
+        obs1, _ = env.reset(seed=42)
+        pos1 = obs1["agent_pos"].copy()
+        obs2, _, _, _, _ = env.step(Action.RIGHT)
+        pos2 = obs2["agent_pos"]
+        assert not np.array_equal(pos1, pos2)
+
+    def test_keypair_key_state_changes(self):
+        """Key-pair key bits flip after collection."""
+        env = self._make_env(flatten_obs=False)
+        env.reset(seed=42)
+        # Walk to key at (2,2): from (1,1) go DOWN then RIGHT
+        env.step(Action.DOWN)  # (2,1)
+        obs, _, _, _, _ = env.step(Action.RIGHT)  # (2,2) - collect red key
+        # Red key at index 0 should be collected, blue at index 1 also gone (pair)
+        assert obs["keypair_keys"][0] == 0
+        assert obs["keypair_keys"][1] == 0
+
+    def test_door_state_changes(self):
+        """Door bit flips after opening."""
+        env = self._make_env(flatten_obs=False)
+        env.reset(seed=42)
+        # Collect key and walk to door
+        env.step(Action.DOWN)   # (2,1)
+        env.step(Action.RIGHT)  # (2,2) - collect red key
+        env.step(Action.DOWN)   # (3,2)
+        env.step(Action.RIGHT)  # (3,3)
+        obs_before = env._get_observation()
+        assert obs_before["doors"][0] == 0  # closed
+        env.step(Action.DOWN)   # (4,3) - open door
+        obs_after = env._get_observation()
+        assert obs_after["doors"][0] == 1  # open
+
+    def test_reward_state_changes(self):
+        """Reward bit flips after collection."""
+        env = GridWorldEnv(self.SIMPLE_LAYOUT, obs_mode="symbolic_minimal", flatten_obs=False)
+        env.reset(seed=42)
+        obs, _ = env.reset(seed=42)
+        assert obs["rewards"][0] == 1  # available
+        # Walk to reward at (3,3): from (1,1) go RIGHT, RIGHT, DOWN, DOWN
+        env.step(Action.RIGHT)
+        env.step(Action.RIGHT)
+        env.step(Action.DOWN)
+        obs, _, _, _, _ = env.step(Action.DOWN)
+        assert obs["rewards"][0] == 0  # collected
+
+    def test_in_observation_space(self):
+        """Observations are contained in observation_space."""
+        env = self._make_env(flatten_obs=True)
+        obs, _ = env.reset(seed=42)
+        assert env.observation_space.contains(obs)
+
+        env_dict = self._make_env(flatten_obs=False)
+        obs_dict, _ = env_dict.reset(seed=42)
+        assert env_dict.observation_space.contains(obs_dict)
+
+    def test_no_objects_layout(self):
+        """Layout with only a reward produces small observation."""
+        env = GridWorldEnv(self.SIMPLE_LAYOUT, obs_mode="symbolic_minimal", flatten_obs=True)
+        obs, _ = env.reset(seed=42)
+        # 2 (pos) + 3 (held_key) + 1 (reward) + 3 (posner) = 9
+        assert obs.shape == (9,)
+
+
+class TestTabularStateSpace:
+    """Tests for state_space_size and state_index properties."""
+
+    SIMPLE_LAYOUT = """
+    #####
+    #S..#
+    #...#
+    #..G#
+    #####
+    """
+
+    def test_state_space_size(self):
+        """State space size is n_positions * 3 * 2^n_rewards."""
+        env = GridWorldEnv(self.SIMPLE_LAYOUT)
+        # 3x3 interior = 9 valid positions, 1 reward
+        # 9 * 3 * 2^1 = 54
+        assert env.state_space_size == 54
+
+    def test_state_index_changes_after_move(self):
+        """State index changes when agent moves."""
+        env = GridWorldEnv(self.SIMPLE_LAYOUT)
+        env.reset(seed=42)
+        idx1 = env.state_index
+        env.step(Action.RIGHT)
+        idx2 = env.state_index
+        assert idx1 != idx2
+
+    def test_state_index_changes_after_reward(self):
+        """State index changes when reward is collected."""
+        env = GridWorldEnv(self.SIMPLE_LAYOUT)
+        env.reset(seed=42)
+        # Move to reward at (3,3): RIGHT, RIGHT, DOWN, DOWN
+        env.step(Action.RIGHT)
+        env.step(Action.RIGHT)
+        env.step(Action.DOWN)
+        idx_before = env.state_index
+        env.step(Action.DOWN)  # collect reward at (3,3)
+        idx_after = env.state_index
+        assert idx_before != idx_after
+
+    def test_state_index_in_range(self):
+        """State index is always in [0, state_space_size)."""
+        env = GridWorldEnv(self.SIMPLE_LAYOUT)
+        env.reset(seed=42)
+        size = env.state_space_size
+        # Walk around and check bounds
+        actions = [Action.RIGHT, Action.RIGHT, Action.DOWN, Action.DOWN,
+                   Action.LEFT, Action.LEFT, Action.UP, Action.UP]
+        for action in actions:
+            assert 0 <= env.state_index < size
+            env.step(action)
+        assert 0 <= env.state_index < size
+
+    def test_state_index_unique_across_trajectory(self):
+        """Different states produce different indices."""
+        env = GridWorldEnv(self.SIMPLE_LAYOUT)
+        env.reset(seed=42)
+        indices = {env.state_index}
+        # Visit distinct positions
+        for action in [Action.RIGHT, Action.DOWN, Action.LEFT, Action.DOWN]:
+            env.step(action)
+            indices.add(env.state_index)
+        # All 5 states (start + 4 moves) should be unique
+        assert len(indices) == 5
+
+    def test_state_index_raises_with_posner(self):
+        """state_index raises RuntimeError with posner_mode=True."""
+        layout = """
+        #######
+        #S....#
+        #.r...#
+        #.b...#
+        ###D###
+        #..G..#
+        #######
+        """
+        config = {
+            "door_colors": {"4,3": "red"},
+            "key_pairs": [{"positions": ["2,2", "3,2"], "room_id": 0}],
+            "protected_rewards": {"4,3": ["5,3"]},
+        }
+        from gridworld_env.layout import parse_layout_string
+        parsed = parse_layout_string(layout, config)
+        env = GridWorldEnv(parsed, posner_mode=True)
+        env.reset(seed=42)
+        with pytest.raises(RuntimeError):
+            _ = env.state_index
+        with pytest.raises(RuntimeError):
+            _ = env.state_space_size
+
+    def test_state_index_raises_before_reset(self):
+        """state_index raises RuntimeError before reset."""
+        env = GridWorldEnv(self.SIMPLE_LAYOUT)
+        with pytest.raises(RuntimeError):
+            _ = env.state_index
