@@ -338,6 +338,13 @@ class GridWorldEnv(gym.Env):
                 key_pair.collect(key)
                 self._held_key = key.color
 
+                # Destroy rewards immediately if the wrong key was collected
+                door = self._find_door_for_key_pair(key_pair)
+                if door is not None and key.color != door.correct_key_color:
+                    for r in self._layout.rewards:
+                        if r.protected_by_door == door:
+                            r.destroyed = True
+
                 # Advance to next room's cues when key from key pair is collected
                 if self.posner_mode:
                     self._advance_to_next_room()
@@ -390,6 +397,29 @@ class GridWorldEnv(gym.Env):
 
             self._room_cues[room_id] = cues
 
+    def _find_door_for_key_pair(self, key_pair: "KeyPair") -> Optional[Door]:
+        """
+        Find the door associated with a key pair based on proximity.
+
+        Returns the closest closed door to the key pair's key positions.
+        """
+        key_positions = [k.position for k in key_pair.keys]
+
+        closest_door = None
+        min_distance = float('inf')
+
+        for door in self._layout.doors:
+            if door.is_open:
+                continue
+
+            for key_pos in key_positions:
+                dist = abs(door.position[0] - key_pos[0]) + abs(door.position[1] - key_pos[1])
+                if dist < min_distance:
+                    min_distance = dist
+                    closest_door = door
+
+        return closest_door
+
     def _find_correct_key_for_room(self, key_pair: "KeyPair") -> Optional[KeyColor]:
         """
         Find the correct key color for a room based on its adjacent door.
@@ -397,27 +427,9 @@ class GridWorldEnv(gym.Env):
         This searches for a door that the agent would reach after collecting
         a key from this key pair, based on proximity.
         """
-        # Get positions of keys in this pair
-        key_positions = [k.position for k in key_pair.keys]
-
-        # Find the closest door to these key positions
-        closest_door = None
-        min_distance = float('inf')
-
-        for door in self._layout.doors:
-            if door.is_open:
-                continue  # Skip already open doors
-
-            for key_pos in key_positions:
-                # Manhattan distance
-                dist = abs(door.position[0] - key_pos[0]) + abs(door.position[1] - key_pos[1])
-                if dist < min_distance:
-                    min_distance = dist
-                    closest_door = door
-
-        if closest_door is not None:
-            return closest_door.correct_key_color
-
+        door = self._find_door_for_key_pair(key_pair)
+        if door is not None:
+            return door.correct_key_color
         return None
 
     def _advance_to_next_room(self) -> None:
