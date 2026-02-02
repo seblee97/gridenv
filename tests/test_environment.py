@@ -483,3 +483,128 @@ class TestStartPositionMode:
         """
         with pytest.raises(ValueError):
             GridWorldEnv(layout, start_pos_mode="invalid")
+
+
+class TestObsMode:
+    """Tests for obs_mode parameter."""
+
+    SIMPLE_LAYOUT = """
+    #####
+    #S..#
+    #...#
+    #..G#
+    #####
+    """
+
+    def test_default_is_symbolic(self):
+        """Default obs_mode is symbolic (backward compatible)."""
+        env = GridWorldEnv(self.SIMPLE_LAYOUT)
+        obs, _ = env.reset(seed=42)
+        assert isinstance(obs, np.ndarray)
+        assert obs.dtype == np.float32
+
+    def test_invalid_obs_mode_raises(self):
+        """Invalid obs_mode raises ValueError."""
+        with pytest.raises(ValueError):
+            GridWorldEnv(self.SIMPLE_LAYOUT, obs_mode="invalid")
+
+    def test_pixel_obs_shape_and_dtype(self):
+        """Pixel observations have correct shape and dtype."""
+        env = GridWorldEnv(self.SIMPLE_LAYOUT, obs_mode="pixels")
+        obs, _ = env.reset(seed=42)
+        # 5 rows * 32 + 40 status bar = 200, 5 cols * 32 = 160
+        assert isinstance(obs, np.ndarray)
+        assert obs.shape == (200, 160, 3)
+        assert obs.dtype == np.uint8
+
+    def test_pixel_obs_values_in_range(self):
+        """Pixel observation values are valid uint8."""
+        env = GridWorldEnv(self.SIMPLE_LAYOUT, obs_mode="pixels")
+        obs, _ = env.reset(seed=42)
+        assert obs.min() >= 0
+        assert obs.max() <= 255
+
+    def test_pixel_obs_works_without_render_mode(self):
+        """Pixel observations work with render_mode=None."""
+        env = GridWorldEnv(self.SIMPLE_LAYOUT, obs_mode="pixels", render_mode=None)
+        obs, _ = env.reset(seed=42)
+        assert obs.shape == (200, 160, 3)
+
+    def test_pixel_obs_changes_after_step(self):
+        """Pixel observation changes when agent moves."""
+        env = GridWorldEnv(self.SIMPLE_LAYOUT, obs_mode="pixels")
+        obs1, _ = env.reset(seed=42)
+        obs2, _, _, _, _ = env.step(Action.RIGHT)
+        assert not np.array_equal(obs1, obs2)
+
+    def test_both_mode_returns_dict(self):
+        """Both mode returns dict with pixels and symbolic keys."""
+        env = GridWorldEnv(self.SIMPLE_LAYOUT, obs_mode="both")
+        obs, _ = env.reset(seed=42)
+        assert isinstance(obs, dict)
+        assert "pixels" in obs
+        assert "symbolic" in obs
+
+    def test_both_mode_pixel_shape(self):
+        """Pixels in both mode have correct shape."""
+        env = GridWorldEnv(self.SIMPLE_LAYOUT, obs_mode="both")
+        obs, _ = env.reset(seed=42)
+        assert obs["pixels"].shape == (200, 160, 3)
+        assert obs["pixels"].dtype == np.uint8
+
+    def test_both_mode_symbolic_flat(self):
+        """Symbolic in both mode is flat array when flatten_obs=True."""
+        env = GridWorldEnv(self.SIMPLE_LAYOUT, obs_mode="both", flatten_obs=True)
+        obs, _ = env.reset(seed=42)
+        assert isinstance(obs["symbolic"], np.ndarray)
+        assert obs["symbolic"].dtype == np.float32
+
+    def test_both_mode_symbolic_dict(self):
+        """Symbolic in both mode is dict when flatten_obs=False."""
+        env = GridWorldEnv(self.SIMPLE_LAYOUT, obs_mode="both", flatten_obs=False)
+        obs, _ = env.reset(seed=42)
+        assert isinstance(obs["symbolic"], dict)
+        assert "grid" in obs["symbolic"]
+        assert "agent_pos" in obs["symbolic"]
+
+    def test_observation_space_symbolic(self):
+        """Observation space for symbolic mode is Box (flat) or Dict."""
+        from gymnasium import spaces
+        env_flat = GridWorldEnv(self.SIMPLE_LAYOUT, obs_mode="symbolic", flatten_obs=True)
+        assert isinstance(env_flat.observation_space, spaces.Box)
+
+        env_dict = GridWorldEnv(self.SIMPLE_LAYOUT, obs_mode="symbolic", flatten_obs=False)
+        assert isinstance(env_dict.observation_space, spaces.Dict)
+
+    def test_observation_space_pixels(self):
+        """Observation space for pixel mode is Box with uint8."""
+        from gymnasium import spaces
+        env = GridWorldEnv(self.SIMPLE_LAYOUT, obs_mode="pixels")
+        assert isinstance(env.observation_space, spaces.Box)
+        assert env.observation_space.dtype == np.uint8
+        assert env.observation_space.shape == (200, 160, 3)
+
+    def test_observation_space_both(self):
+        """Observation space for both mode is Dict with pixels and symbolic."""
+        from gymnasium import spaces
+        env = GridWorldEnv(self.SIMPLE_LAYOUT, obs_mode="both")
+        assert isinstance(env.observation_space, spaces.Dict)
+        assert "pixels" in env.observation_space.spaces
+        assert "symbolic" in env.observation_space.spaces
+
+    def test_observation_in_space(self):
+        """Observations are contained in their observation_space for all modes."""
+        for obs_mode in ("symbolic", "pixels", "both"):
+            env = GridWorldEnv(self.SIMPLE_LAYOUT, obs_mode=obs_mode)
+            obs, _ = env.reset(seed=42)
+            assert env.observation_space.contains(obs), (
+                f"Observation not in space for obs_mode='{obs_mode}'"
+            )
+
+    def test_close_cleans_obs_renderer(self):
+        """close() cleans up the observation renderer."""
+        env = GridWorldEnv(self.SIMPLE_LAYOUT, obs_mode="pixels")
+        env.reset(seed=42)
+        assert env._obs_renderer is not None
+        env.close()
+        assert env._obs_renderer is None

@@ -84,6 +84,7 @@ class GridWorldEnv(gym.Env):
         step_reward: float = -0.01,
         collision_reward: float = -0.1,
         flatten_obs: bool = True,
+        obs_mode: str = "symbolic",
         render_mode: Optional[str] = None,
         debug_cues: bool = False,
         show_score: bool = False,
@@ -109,10 +110,18 @@ class GridWorldEnv(gym.Env):
         self.step_reward = step_reward
         self.collision_reward = collision_reward
         self.flatten_obs = flatten_obs
+        self.obs_mode = obs_mode
         self.render_mode = render_mode
         self.debug_cues = debug_cues
         self.show_score = show_score
         self.start_pos_mode = start_pos_mode
+
+        # Validate obs_mode
+        if obs_mode not in ("symbolic", "pixels", "both"):
+            raise ValueError(
+                f"obs_mode must be 'symbolic', 'pixels', or 'both', "
+                f"got '{obs_mode}'"
+            )
 
         # Validate start_pos_mode
         if start_pos_mode not in ("fixed", "random_in_room"):
@@ -152,18 +161,18 @@ class GridWorldEnv(gym.Env):
         # So each feature takes 3 values, total = num_features * 3
         posner_cue_size = posner_num_features * 3 if posner_mode else 3
 
+        # Build symbolic observation space
         if flatten_obs:
-            # Flattened: grid (one-hot) + agent_pos + held_key + posner_cues
             grid_size = grid_shape[0] * grid_shape[1] * num_cell_types
             extra_features = 2 + 3 + posner_cue_size  # agent_pos(2) + held_key(3) + posner_cues
-            self.observation_space = spaces.Box(
+            symbolic_space = spaces.Box(
                 low=0.0,
                 high=1.0,
                 shape=(grid_size + extra_features,),
                 dtype=np.float32,
             )
         else:
-            self.observation_space = spaces.Dict({
+            symbolic_space = spaces.Dict({
                 "grid": spaces.Box(
                     low=0,
                     high=num_cell_types - 1,
@@ -185,11 +194,35 @@ class GridWorldEnv(gym.Env):
                 ),  # Each feature: 0=none, 1=red, 2=blue
             })
 
+        # Build pixel observation space
+        self._obs_cell_size = 32
+        self._obs_status_height = 40
+        pixel_h = grid_shape[0] * self._obs_cell_size + self._obs_status_height
+        pixel_w = grid_shape[1] * self._obs_cell_size
+        pixel_space = spaces.Box(
+            low=0,
+            high=255,
+            shape=(pixel_h, pixel_w, 3),
+            dtype=np.uint8,
+        )
+
+        # Assign observation space based on obs_mode
+        if obs_mode == "symbolic":
+            self.observation_space = symbolic_space
+        elif obs_mode == "pixels":
+            self.observation_space = pixel_space
+        else:  # "both"
+            self.observation_space = spaces.Dict({
+                "pixels": pixel_space,
+                "symbolic": symbolic_space,
+            })
+
         # Cache for random start positions (computed once from base layout)
         self._first_room_positions: Optional[List[Tuple[int, int]]] = None
 
         # Rendering
         self._renderer = None
+        self._obs_renderer = None
 
     def reset(
         self,
@@ -485,8 +518,20 @@ class GridWorldEnv(gym.Env):
             self._posner_cues = None
             self._correct_key = None
 
-    def _get_observation(self) -> Union[np.ndarray, Dict[str, np.ndarray]]:
-        """Build the current observation."""
+    def _get_observation(self) -> Union[np.ndarray, Dict[str, Any]]:
+        """Build the current observation based on obs_mode."""
+        if self.obs_mode == "symbolic":
+            return self._get_symbolic_observation()
+        elif self.obs_mode == "pixels":
+            return self._get_pixel_observation()
+        else:  # "both"
+            return {
+                "pixels": self._get_pixel_observation(),
+                "symbolic": self._get_symbolic_observation(),
+            }
+
+    def _get_symbolic_observation(self) -> Union[np.ndarray, Dict[str, np.ndarray]]:
+        """Build symbolic observation."""
         grid = self._build_grid_observation()
 
         if self.flatten_obs:
@@ -555,6 +600,25 @@ class GridWorldEnv(gym.Env):
                 "held_key": held_key_val,
                 "posner_cue": posner_cue_vals,
             }
+
+    def _get_pixel_observation(self) -> np.ndarray:
+        """Render the current state as an RGB pixel array."""
+        if self._obs_renderer is None:
+            from gridworld_env.rendering import Renderer
+            self._obs_renderer = Renderer(
+                self._base_layout.width,
+                self._base_layout.height,
+                render_mode="rgb_array",
+                cell_size=self._obs_cell_size,
+            )
+        return self._obs_renderer.render(
+            self._layout,
+            self._agent_pos,
+            self._held_key,
+            self._posner_cues,
+            debug_info=None,
+            score=None,
+        )
 
     def _build_grid_observation(self) -> np.ndarray:
         """Build grid observation showing cell types."""
@@ -687,6 +751,9 @@ class GridWorldEnv(gym.Env):
         if self._renderer is not None:
             self._renderer.close()
             self._renderer = None
+        if self._obs_renderer is not None:
+            self._obs_renderer.close()
+            self._obs_renderer = None
 
     def get_action_meanings(self) -> List[str]:
         """Get human-readable action names."""
