@@ -2,6 +2,7 @@
 GridWorld Environment - A configurable RL environment with keys, doors, and Posner cueing.
 """
 
+from gridworld_env.continual import TaskConfig, TaskSequenceWrapper
 from gridworld_env.environment import GridWorldEnv
 from gridworld_env.layout import Layout, parse_layout_file, parse_layout_string
 from gridworld_env.objects import Key, Door, Reward, KeyColor
@@ -16,4 +17,6 @@ __all__ = [
     "Door",
     "Reward",
     "KeyColor",
+    "TaskConfig",
+    "TaskSequenceWrapper",
 ]

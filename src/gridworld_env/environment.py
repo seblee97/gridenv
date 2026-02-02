@@ -13,6 +13,8 @@ from gymnasium import spaces
 from gridworld_env.layout import Layout, parse_layout_file, parse_layout_string
 from gridworld_env.objects import KeyColor, KeyPair
 
+_UNSET = object()
+
 
 class Action(IntEnum):
     """Available actions in the environment."""
@@ -928,6 +930,114 @@ class GridWorldEnv(gym.Env):
         if self._obs_renderer is not None:
             self._obs_renderer.close()
             self._obs_renderer = None
+
+    def _reconfigure(
+        self,
+        layout: Union[Layout, str, Path],
+        *,
+        posner_validity: Optional[float] = None,
+        posner_cue_index: Optional[int] = None,
+        step_reward: Optional[float] = None,
+        collision_reward: Optional[float] = None,
+        max_steps: object = _UNSET,
+        start_pos_mode: Optional[str] = None,
+    ) -> None:
+        """Swap the base layout and scalar parameters for continual learning.
+
+        Recomputes all internal state derived from the layout. Does NOT rebuild
+        the observation space — callers (e.g. TaskSequenceWrapper) handle that.
+
+        Args:
+            layout: New layout (Layout object, file path, or ASCII string).
+            posner_validity: Override posner_validity (or keep current if None).
+            posner_cue_index: Override posner_cue_index (or keep current if None).
+            step_reward: Override step_reward (or keep current if None).
+            collision_reward: Override collision_reward (or keep current if None).
+            max_steps: Override max_steps. Pass None for unlimited.
+                Omit entirely to keep current value.
+            start_pos_mode: Override start_pos_mode (or keep current if None).
+        """
+        # Parse new layout
+        if isinstance(layout, Layout):
+            new_layout = layout
+        elif isinstance(layout, Path) or (
+            isinstance(layout, str) and Path(layout).exists()
+        ):
+            new_layout = parse_layout_file(layout)
+        else:
+            new_layout = parse_layout_string(layout)
+
+        # Validate grid dimensions match
+        if (new_layout.height != self._base_layout.height
+                or new_layout.width != self._base_layout.width):
+            raise ValueError(
+                f"Layout grid size ({new_layout.height}, {new_layout.width}) "
+                f"does not match current size "
+                f"({self._base_layout.height}, {self._base_layout.width})"
+            )
+
+        # Swap layout
+        self._base_layout = new_layout
+
+        # Recompute paired key positions and object counts
+        paired_key_positions = set()
+        for kp in self._base_layout.key_pairs:
+            for k in kp.keys:
+                paired_key_positions.add(k.position)
+        self._paired_key_positions = paired_key_positions
+        self._n_keys = sum(
+            1 for k in self._base_layout.keys
+            if k.position not in paired_key_positions
+        )
+        self._n_keypair_keys = sum(
+            len(kp.keys) for kp in self._base_layout.key_pairs
+        )
+        self._n_doors = len(self._base_layout.doors)
+        self._n_rewards = len(self._base_layout.rewards)
+
+        # Recompute valid positions for tabular state indexing
+        self._valid_positions = sorted(
+            (r, c)
+            for r in range(self._base_layout.height)
+            for c in range(self._base_layout.width)
+            if not self._base_layout.is_wall(r, c)
+        )
+        self._position_to_index = {
+            pos: i for i, pos in enumerate(self._valid_positions)
+        }
+
+        # Invalidate caches
+        self._first_room_positions = None
+        if self._renderer is not None:
+            self._renderer.close()
+            self._renderer = None
+        if self._obs_renderer is not None:
+            self._obs_renderer.close()
+            self._obs_renderer = None
+
+        # Apply scalar overrides
+        if posner_validity is not None:
+            self.posner_validity = posner_validity
+        if posner_cue_index is not None:
+            if posner_cue_index < 0 or posner_cue_index >= self.posner_num_features:
+                raise ValueError(
+                    f"posner_cue_index ({posner_cue_index}) must be in range "
+                    f"[0, posner_num_features ({self.posner_num_features}))"
+                )
+            self.posner_cue_index = posner_cue_index
+        if step_reward is not None:
+            self.step_reward = step_reward
+        if collision_reward is not None:
+            self.collision_reward = collision_reward
+        if max_steps is not _UNSET:
+            self.max_steps = max_steps
+        if start_pos_mode is not None:
+            if start_pos_mode not in ("fixed", "random_in_room"):
+                raise ValueError(
+                    f"start_pos_mode must be 'fixed' or 'random_in_room', "
+                    f"got '{start_pos_mode}'"
+                )
+            self.start_pos_mode = start_pos_mode
 
     def get_action_meanings(self) -> List[str]:
         """Get human-readable action names."""
