@@ -223,6 +223,12 @@ def parse_layout_string(
             if reward.position in protected_pos:
                 reward.protected_by_door = door
 
+    # Link key pairs to their associated doors (sorted by grid position)
+    sorted_doors = sorted(doors, key=lambda d: d.position)
+    for kp in key_pairs:
+        if kp.room_id < len(sorted_doors):
+            kp.door = sorted_doors[kp.room_id]
+
     return Layout(
         grid=grid,
         width=width,

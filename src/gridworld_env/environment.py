@@ -11,7 +11,7 @@ import numpy as np
 from gymnasium import spaces
 
 from gridworld_env.layout import Layout, parse_layout_file, parse_layout_string
-from gridworld_env.objects import Door, Key, KeyColor, KeyPair, Reward
+from gridworld_env.objects import KeyColor, KeyPair
 
 
 class Action(IntEnum):
@@ -67,6 +67,8 @@ class GridWorldEnv(gym.Env):
         collision_reward: Reward for walking into walls.
         flatten_obs: Whether to flatten observations to 1D array.
         render_mode: 'human', 'rgb_array', or None.
+        start_pos_mode: 'fixed' uses the layout's S position every episode;
+            'random_in_room' samples a random empty floor cell in the first room.
     """
 
     metadata = {"render_modes": ["human", "rgb_array"], "render_fps": 10}
@@ -85,6 +87,7 @@ class GridWorldEnv(gym.Env):
         render_mode: Optional[str] = None,
         debug_cues: bool = False,
         show_score: bool = False,
+        start_pos_mode: str = "fixed",
     ):
         super().__init__()
 
@@ -109,6 +112,14 @@ class GridWorldEnv(gym.Env):
         self.render_mode = render_mode
         self.debug_cues = debug_cues
         self.show_score = show_score
+        self.start_pos_mode = start_pos_mode
+
+        # Validate start_pos_mode
+        if start_pos_mode not in ("fixed", "random_in_room"):
+            raise ValueError(
+                f"start_pos_mode must be 'fixed' or 'random_in_room', "
+                f"got '{start_pos_mode}'"
+            )
 
         # Validate posner_cue_index
         if posner_cue_index < 0 or posner_cue_index >= posner_num_features:
@@ -174,6 +185,9 @@ class GridWorldEnv(gym.Env):
                 ),  # Each feature: 0=none, 1=red, 2=blue
             })
 
+        # Cache for random start positions (computed once from base layout)
+        self._first_room_positions: Optional[List[Tuple[int, int]]] = None
+
         # Rendering
         self._renderer = None
 
@@ -197,7 +211,12 @@ class GridWorldEnv(gym.Env):
 
         # Deep copy the base layout for this episode
         self._layout = self._base_layout.copy()
-        self._agent_pos = self._layout.start_position
+        if self.start_pos_mode == "random_in_room":
+            positions = self._get_first_room_positions()
+            idx = self.np_random.integers(len(positions))
+            self._agent_pos = positions[idx]
+        else:
+            self._agent_pos = self._layout.start_position
         self._held_key = None
         self._steps = 0
 
@@ -295,12 +314,6 @@ class GridWorldEnv(gym.Env):
                 # Open the door with the held key
                 door.open_with_key(self._held_key)
 
-                # If wrong key, destroy protected rewards
-                if door.wrong_key_used:
-                    for r in self._layout.rewards:
-                        if r.protected_by_door == door:
-                            r.destroyed = True
-
                 # Key is consumed
                 self._held_key = None
 
@@ -338,11 +351,11 @@ class GridWorldEnv(gym.Env):
                 key_pair.collect(key)
                 self._held_key = key.color
 
-                # Destroy rewards immediately if the wrong key was collected
-                door = self._find_door_for_key_pair(key_pair)
-                if door is not None and key.color != door.correct_key_color:
+                # Destroy protected rewards immediately if the wrong key was chosen
+                if key_pair.door is not None and key.color != key_pair.door.correct_key_color:
+                    key_pair.door.wrong_key_used = True
                     for r in self._layout.rewards:
-                        if r.protected_by_door == door:
+                        if r.protected_by_door == key_pair.door:
                             r.destroyed = True
 
                 # Advance to next room's cues when key from key pair is collected
@@ -397,39 +410,60 @@ class GridWorldEnv(gym.Env):
 
             self._room_cues[room_id] = cues
 
-    def _find_door_for_key_pair(self, key_pair: "KeyPair") -> Optional[Door]:
+    def _get_first_room_positions(self) -> List[Tuple[int, int]]:
+        """Return empty floor cells in the first room (reachable from start without crossing doors).
+
+        Results are cached since the base layout topology is constant.
         """
-        Find the door associated with a key pair based on proximity.
+        if self._first_room_positions is not None:
+            return self._first_room_positions
 
-        Returns the closest closed door to the key pair's key positions.
-        """
-        key_positions = [k.position for k in key_pair.keys]
+        layout = self._base_layout
+        start = layout.start_position
 
-        closest_door = None
-        min_distance = float('inf')
+        # Collect positions occupied by objects
+        occupied = set()
+        for key in layout.keys:
+            occupied.add(key.position)
+        for kp in layout.key_pairs:
+            for key in kp.keys:
+                occupied.add(key.position)
+        for reward in layout.rewards:
+            occupied.add(reward.position)
 
-        for door in self._layout.doors:
-            if door.is_open:
+        # Flood-fill from start, stopping at walls and doors
+        door_positions = {d.position for d in layout.doors}
+        visited: set = set()
+        stack = [start]
+        positions: List[Tuple[int, int]] = []
+
+        while stack:
+            pos = stack.pop()
+            if pos in visited:
+                continue
+            visited.add(pos)
+
+            row, col = pos
+            if layout.is_wall(row, col):
+                continue
+            if pos in door_positions:
                 continue
 
-            for key_pos in key_positions:
-                dist = abs(door.position[0] - key_pos[0]) + abs(door.position[1] - key_pos[1])
-                if dist < min_distance:
-                    min_distance = dist
-                    closest_door = door
+            if pos not in occupied:
+                positions.append(pos)
 
-        return closest_door
+            for dr, dc in [(-1, 0), (1, 0), (0, -1), (0, 1)]:
+                neighbour = (row + dr, col + dc)
+                if neighbour not in visited:
+                    stack.append(neighbour)
+
+        self._first_room_positions = positions
+        return positions
 
     def _find_correct_key_for_room(self, key_pair: "KeyPair") -> Optional[KeyColor]:
-        """
-        Find the correct key color for a room based on its adjacent door.
-
-        This searches for a door that the agent would reach after collecting
-        a key from this key pair, based on proximity.
-        """
-        door = self._find_door_for_key_pair(key_pair)
-        if door is not None:
-            return door.correct_key_color
+        """Find the correct key color for a room based on its linked door."""
+        if key_pair.door is not None:
+            return key_pair.door.correct_key_color
         return None
 
     def _advance_to_next_room(self) -> None:

@@ -191,28 +191,19 @@ class TestKeysAndDoors:
         assert reward > 0  # Reward was preserved and auto-collected
         assert info["destroyed_rewards"] == 0
 
-    def test_door_opens_with_wrong_key_destroys_reward(self, key_door_env):
-        """Test that wrong key destroys protected reward."""
+    def test_wrong_key_destroys_reward_immediately(self, key_door_env):
+        """Test that collecting the wrong key destroys protected reward immediately."""
         key_door_env.reset(seed=42)
 
-        # Get blue key (wrong)
+        # Get blue key (wrong) — reward should be destroyed on collection
         key_door_env.step(Action.DOWN)   # (1,1) -> (2,1)
         key_door_env.step(Action.DOWN)   # (2,1) -> (3,1)
-        key_door_env.step(Action.RIGHT)  # (3,1) -> (3,2) - auto-collect blue key
+        _, _, term, _, info = key_door_env.step(Action.RIGHT)  # (3,1) -> (3,2)
         assert key_door_env.held_key == KeyColor.BLUE
 
-        # Go to door
-        key_door_env.step(Action.RIGHT)  # (3,2) -> (3,3)
-
-        # Move into door - should auto-open with wrong key
-        key_door_env.step(Action.DOWN)   # (3,3) -> (4,3)
-        assert key_door_env.held_key is None  # Key consumed
-
-        # Move to reward position
-        obs, reward, term, trunc, info = key_door_env.step(Action.DOWN)
-
-        # Reward was destroyed by wrong key
+        # Reward is already destroyed before reaching the door
         assert info["destroyed_rewards"] > 0
+        assert term  # Episode ends (all rewards resolved)
 
 
 class TestPosnerMode:
@@ -426,3 +417,69 @@ class TestInfo:
         assert "available_rewards" in info
         assert "held_key" in info
         assert "agent_pos" in info
+
+
+class TestStartPositionMode:
+    """Tests for start position modes."""
+
+    @pytest.fixture
+    def room_layout(self):
+        """Layout with a first room, door, and second room."""
+        layout = """
+        #######
+        #S....#
+        #.r...#
+        #.b...#
+        ###D###
+        #..G..#
+        #######
+        """
+        config = {
+            "door_colors": {"4,3": "red"},
+            "key_pairs": [{"positions": ["2,2", "3,2"], "room_id": 0}],
+            "protected_rewards": {"4,3": ["5,3"]},
+        }
+        from gridworld_env.layout import parse_layout_string
+        return parse_layout_string(layout, config)
+
+    def test_fixed_mode_uses_start_position(self, room_layout):
+        """Test that fixed mode always starts at layout S position."""
+        env = GridWorldEnv(room_layout, start_pos_mode="fixed")
+        for seed in range(10):
+            env.reset(seed=seed)
+            assert env.agent_position == (1, 1)
+
+    def test_random_in_room_stays_in_first_room(self, room_layout):
+        """Test that random_in_room only places agent in the first room."""
+        env = GridWorldEnv(room_layout, start_pos_mode="random_in_room")
+        positions = set()
+        for seed in range(100):
+            env.reset(seed=seed)
+            pos = env.agent_position
+            positions.add(pos)
+            row, col = pos
+            # Must be in the first room (rows 1-3, cols 1-5), not a wall or door
+            assert 1 <= row <= 3 and 1 <= col <= 5, f"Agent at {pos} is outside first room"
+
+        # With 100 seeds, should see more than one unique position
+        assert len(positions) > 1
+
+    def test_random_in_room_avoids_objects(self, room_layout):
+        """Test that random start positions exclude key/reward cells."""
+        env = GridWorldEnv(room_layout, start_pos_mode="random_in_room")
+        object_positions = {(2, 2), (3, 2)}  # key positions
+        for seed in range(200):
+            env.reset(seed=seed)
+            assert env.agent_position not in object_positions, (
+                f"Agent placed on object at {env.agent_position}"
+            )
+
+    def test_invalid_start_pos_mode_raises(self):
+        """Test that an invalid start_pos_mode raises ValueError."""
+        layout = """
+        ###
+        #S#
+        ###
+        """
+        with pytest.raises(ValueError):
+            GridWorldEnv(layout, start_pos_mode="invalid")

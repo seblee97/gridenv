@@ -104,10 +104,12 @@ class KeyPair:
         keys: Tuple of two keys (different colors).
         room_id: Identifier for the room containing these keys.
         collected_key: Which key was collected (None if neither).
+        door: The door associated with this key pair (set during layout parsing).
     """
     keys: Tuple[Key, Key]
     room_id: int
     collected_key: Optional[Key] = None
+    door: Optional["Door"] = None
 
     def collect(self, key: Key) -> bool:
         """
