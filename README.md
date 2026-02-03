@@ -82,7 +82,7 @@ Create a `.txt` file with the ASCII layout and an optional `.json` config file:
 **simple_room.json**
 ```json
 {
-    "door_colors": {
+    "default_correct_keys": {
         "4,4": "red"
     },
     "key_pairs": [
@@ -111,6 +111,8 @@ env = GridWorldEnv(
     layout,                    # Layout object, file path, or ASCII string
     posner_mode=False,         # Enable Posner cueing
     posner_validity=0.8,       # Probability cue is correct (0.0-1.0)
+    random_key_colors=False,   # Randomize key colors per episode (overrides .txt)
+    random_correct_key=False,  # Randomize correct key per episode (overrides .json)
     max_steps=None,            # Maximum steps per episode
     step_reward=-0.01,         # Reward per step (negative for time pressure)
     collision_reward=-0.1,     # Penalty for hitting walls
@@ -123,7 +125,8 @@ env = GridWorldEnv(
 
 The JSON config file supports:
 
-- **door_colors**: Map door positions to correct key colors
+- **default_correct_keys**: Map door positions to default correct key colors.
+  Used when `random_correct_key=False`. Overridden per-episode when `random_correct_key=True`.
   ```json
   {"4,4": "red", "8,4": "blue"}
   ```
@@ -218,7 +221,7 @@ layout = """
 """
 
 config = {
-    "door_colors": {"4,6": "blue", "8,6": "red"},
+    "default_correct_keys": {"4,6": "blue", "8,6": "red"},
     "key_pairs": [
         {"positions": ["2,3", "3,3"], "room_id": 0},
         {"positions": ["6,6", "7,6"], "room_id": 1}
