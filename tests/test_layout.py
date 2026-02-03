@@ -80,7 +80,7 @@ class TestLayoutParsing:
         #...#
         #####
         """
-        config = {"door_colors": {"2,2": "blue"}}
+        config = {"default_correct_keys": {"2,2": "blue"}}
         layout = parse_layout_string(layout_str, config)
 
         assert len(layout.doors) == 1
@@ -115,7 +115,7 @@ class TestLayoutParsing:
         #######
         """
         config = {
-            "door_colors": {"2,3": "red"},
+            "default_correct_keys": {"2,3": "red"},
             "protected_rewards": {"2,3": ["3,3"]},
         }
         layout = parse_layout_string(layout_str, config)

@@ -64,6 +64,12 @@ class GridWorldEnv(gym.Env):
         posner_validity: Probability that the cue at posner_cue_index is correct (0.0-1.0).
         posner_num_features: Number of features in the Posner cue vector.
         posner_cue_index: Index of the feature that is the true cue (0 to num_features-1).
+        random_key_colors: Randomly assign colors to keys in each pair per episode.
+            Overrides the key colors defined in the .txt layout file.
+        random_correct_key: Randomly determine the correct key color per episode.
+            Overrides the default_correct_keys defined in the .json config file.
+            When both random_key_colors and random_correct_key are True, the task
+            requires using the Posner cue to achieve better than 50% accuracy.
         max_steps: Maximum steps per episode (None for unlimited).
         step_reward: Reward given each step (usually negative for time pressure).
         collision_reward: Reward for walking into walls.
@@ -82,6 +88,8 @@ class GridWorldEnv(gym.Env):
         posner_validity: float = 0.8,
         posner_num_features: int = 1,
         posner_cue_index: int = 0,
+        random_key_colors: bool = False,
+        random_correct_key: bool = False,
         max_steps: Optional[int] = None,
         step_reward: float = -0.01,
         collision_reward: float = -0.1,
@@ -108,6 +116,8 @@ class GridWorldEnv(gym.Env):
         self.posner_validity = posner_validity
         self.posner_num_features = posner_num_features
         self.posner_cue_index = posner_cue_index
+        self.random_key_colors = random_key_colors
+        self.random_correct_key = random_correct_key
         self.max_steps = max_steps
         self.step_reward = step_reward
         self.collision_reward = collision_reward
@@ -315,6 +325,23 @@ class GridWorldEnv(gym.Env):
 
         # Deep copy the base layout for this episode
         self._layout = self._base_layout.copy()
+
+        # Randomize key colors if enabled (swap colors within each key pair)
+        if self.random_key_colors:
+            for key_pair in self._layout.key_pairs:
+                if self.np_random.random() < 0.5:
+                    # Swap the colors of the two keys
+                    key_pair.keys[0].color, key_pair.keys[1].color = (
+                        key_pair.keys[1].color,
+                        key_pair.keys[0].color,
+                    )
+
+        # Randomize correct key color if enabled
+        if self.random_correct_key:
+            key_colors = [KeyColor.RED, KeyColor.BLUE]
+            for door in self._layout.doors:
+                door.correct_key_color = self.np_random.choice(key_colors)
+
         if self.start_pos_mode == "random_in_room":
             positions = self._get_first_room_positions()
             idx = self.np_random.integers(len(positions))

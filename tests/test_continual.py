@@ -22,7 +22,7 @@ LAYOUT_A_STR = """\
 #######"""
 
 LAYOUT_A_CONFIG = {
-    "door_colors": {"4,3": "red"},
+    "default_correct_keys": {"4,3": "red"},
     "key_pairs": [{"positions": ["2,2", "3,2"], "room_id": 0}],
     "protected_rewards": {"4,3": ["5,3"]},
 }

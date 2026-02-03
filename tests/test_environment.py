@@ -117,7 +117,7 @@ class TestKeysAndDoors:
         #######
         """
         config = {
-            "door_colors": {"4,3": "red"},
+            "default_correct_keys": {"4,3": "red"},
             "key_pairs": [{"positions": ["2,2", "3,2"], "room_id": 0}],
             "protected_rewards": {"4,3": ["5,3"]},
         }
@@ -222,7 +222,7 @@ class TestPosnerMode:
         #######
         """
         config = {
-            "door_colors": {"4,3": "red"},
+            "default_correct_keys": {"4,3": "red"},
             "key_pairs": [{"positions": ["2,2", "3,2"], "room_id": 0}],
         }
         from gridworld_env.layout import parse_layout_string
@@ -246,7 +246,7 @@ class TestPosnerMode:
         #######
         """
         config = {
-            "door_colors": {"4,3": "red"},
+            "default_correct_keys": {"4,3": "red"},
             "key_pairs": [{"positions": ["2,2", "3,2"], "room_id": 0}],
         }
         from gridworld_env.layout import parse_layout_string
@@ -340,7 +340,7 @@ class TestPosnerMode:
         #######
         """
         config = {
-            "door_colors": {"4,3": "red"},
+            "default_correct_keys": {"4,3": "red"},
             "key_pairs": [{"positions": ["2,2", "3,2"], "room_id": 0}],
         }
         from gridworld_env.layout import parse_layout_string
@@ -435,7 +435,7 @@ class TestStartPositionMode:
         #######
         """
         config = {
-            "door_colors": {"4,3": "red"},
+            "default_correct_keys": {"4,3": "red"},
             "key_pairs": [{"positions": ["2,2", "3,2"], "room_id": 0}],
             "protected_rewards": {"4,3": ["5,3"]},
         }
@@ -624,7 +624,7 @@ class TestSymbolicMinimal:
     #######
     """
     LAYOUT_CONFIG = {
-        "door_colors": {"4,3": "red"},
+        "default_correct_keys": {"4,3": "red"},
         "key_pairs": [{"positions": ["2,2", "3,2"], "room_id": 0}],
         "protected_rewards": {"4,3": ["5,3"]},
     }
@@ -823,7 +823,7 @@ class TestTabularStateSpace:
         #######
         """
         config = {
-            "door_colors": {"4,3": "red"},
+            "default_correct_keys": {"4,3": "red"},
             "key_pairs": [{"positions": ["2,2", "3,2"], "room_id": 0}],
             "protected_rewards": {"4,3": ["5,3"]},
         }

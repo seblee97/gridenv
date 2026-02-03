@@ -119,7 +119,8 @@ def parse_layout_string(
     Args:
         layout_str: ASCII representation of the layout.
         config: Optional configuration dict with:
-            - door_colors: Dict mapping door positions to correct key colors
+            - default_correct_keys: Dict mapping door positions to default correct key colors.
+              Used when random_correct_key=False. (Legacy name: door_colors)
             - reward_values: Dict mapping reward positions to values
             - protected_rewards: Dict mapping door positions to reward positions they protect
 
@@ -158,7 +159,10 @@ def parse_layout_string(
     doors = []
     key_positions = {}  # Track positions for key pair creation
 
-    door_colors = config.get("door_colors", {})
+    # Support both new name and legacy name for backwards compatibility
+    default_correct_keys = config.get(
+        "default_correct_keys", config.get("door_colors", {})
+    )
     reward_values = config.get("reward_values", {})
     protected_rewards = config.get("protected_rewards", {})
 
@@ -192,9 +196,9 @@ def parse_layout_string(
                 keys.append(Key(position=(row, col), color=KeyColor.BLUE))
                 key_positions[(row, col)] = KeyColor.BLUE
             elif char == "D":
-                # Get correct color from config, default to RED
+                # Get default correct color from config, default to RED
                 pos_key = f"{row},{col}"
-                color_str = door_colors.get(pos_key, "red")
+                color_str = default_correct_keys.get(pos_key, "red")
                 correct_color = KeyColor.from_string(color_str)
                 doors.append(Door(position=(row, col), correct_key_color=correct_color))
             elif char == ".":
