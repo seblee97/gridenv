@@ -71,6 +71,7 @@ class Renderer:
         self.render_mode = render_mode
         self.cell_size = cell_size
 
+        self._status_height = 40
         self._pygame_initialized = False
         self._screen = None
         self._clock = None
@@ -430,12 +431,16 @@ class Renderer:
         held_key: Optional[KeyColor],
     ) -> np.ndarray:
         """Simple RGB rendering without pygame."""
-        img = np.zeros((layout.height * 8, layout.width * 8, 3), dtype=np.uint8)
+        cs = self.cell_size
+        status_h = self._status_height
+        grid_h = layout.height * cs
+        grid_w = layout.width * cs
+        img = np.zeros((grid_h + status_h, grid_w, 3), dtype=np.uint8)
 
         for row in range(layout.height):
             for col in range(layout.width):
-                y1, y2 = row * 8, (row + 1) * 8
-                x1, x2 = col * 8, (col + 1) * 8
+                y1, y2 = row * cs, (row + 1) * cs
+                x1, x2 = col * cs, (col + 1) * cs
 
                 if layout.is_wall(row, col):
                     img[y1:y2, x1:x2] = COLORS["wall"]
@@ -444,9 +449,13 @@ class Renderer:
 
         # Draw agent
         row, col = agent_pos
-        y1, y2 = row * 8 + 2, (row + 1) * 8 - 2
-        x1, x2 = col * 8 + 2, (col + 1) * 8 - 2
+        margin = cs // 4
+        y1, y2 = row * cs + margin, (row + 1) * cs - margin
+        x1, x2 = col * cs + margin, (col + 1) * cs - margin
         img[y1:y2, x1:x2] = COLORS["agent"]
+
+        # Status bar background
+        img[grid_h:, :] = (30, 30, 30)
 
         return img
 
