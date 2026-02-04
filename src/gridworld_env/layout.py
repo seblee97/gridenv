@@ -29,6 +29,7 @@ Configuration can be provided as YAML/JSON after the layout separated by ---
 
 import json
 import textwrap
+import warnings
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple, Union
@@ -331,6 +332,13 @@ def parse_layout_file(filepath: Union[str, Path]) -> Layout:
     if config_path.exists():
         with open(config_path) as f:
             config = json.load(f)
+    else:
+        warnings.warn(
+            f"No companion JSON configuration file found at {config_path}. "
+            "Using default configuration.",
+            UserWarning,
+            stacklevel=2,
+        )
 
     with open(filepath) as f:
         content = f.read()
