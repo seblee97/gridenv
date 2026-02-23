@@ -1,0 +1,26 @@
+{
+    "default_correct_keys": {
+        "4,4": "red",
+        "4,8": "blue",
+        "4,12": "red"
+    },
+    "key_pairs": [
+        {
+            "positions": ["2,2", "6,2"],
+            "room_id": 0
+        },
+        {
+            "positions": ["2,6", "6,6"],
+            "room_id": 1
+        },
+        {
+            "positions": ["2,10", "6,10"],
+            "room_id": 2
+        }
+    ],
+    "protected_rewards": {
+        "4,4": ["4,7"],
+        "4,8": ["4,11"],
+        "4,12": ["4,15"]
+    }
+}
