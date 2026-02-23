@@ -105,10 +105,17 @@ class GridWorldEnv(gym.Env):
         # Parse layout if needed
         if isinstance(layout, Layout):
             self._base_layout = layout
-        elif isinstance(layout, Path) or (
-            isinstance(layout, str) and Path(layout).exists()
-        ):
+        elif isinstance(layout, Path):
             self._base_layout = parse_layout_file(layout)
+        elif isinstance(layout, str) and Path(layout).exists():
+            self._base_layout = parse_layout_file(layout)
+        elif isinstance(layout, str) and (
+            layout.endswith(".txt") or "/" in layout or "\\" in layout
+        ):
+            raise FileNotFoundError(
+                f"Layout file not found: '{layout}'. "
+                "Check that the path is correct and the file exists."
+            )
         else:
             self._base_layout = parse_layout_string(layout)
 
@@ -987,10 +994,17 @@ class GridWorldEnv(gym.Env):
         # Parse new layout
         if isinstance(layout, Layout):
             new_layout = layout
-        elif isinstance(layout, Path) or (
-            isinstance(layout, str) and Path(layout).exists()
-        ):
+        elif isinstance(layout, Path):
             new_layout = parse_layout_file(layout)
+        elif isinstance(layout, str) and Path(layout).exists():
+            new_layout = parse_layout_file(layout)
+        elif isinstance(layout, str) and (
+            layout.endswith(".txt") or "/" in layout or "\\" in layout
+        ):
+            raise FileNotFoundError(
+                f"Layout file not found: '{layout}'. "
+                "Check that the path is correct and the file exists."
+            )
         else:
             new_layout = parse_layout_string(layout)
 
