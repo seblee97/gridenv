@@ -857,11 +857,20 @@ class ModularMazeEnv(gym.Env):
         for pos, rid in self._cell_to_room.items():
             cell_groups[rid].append(pos)
 
+        h = self._base_layout.height
+        w = self._base_layout.width
         self._room_bboxes: Dict[int, Tuple[int, int, int, int]] = {}
         for rid, cells in cell_groups.items():
             rows = [r for r, _ in cells]
             cols = [c for _, c in cells]
-            self._room_bboxes[rid] = (min(rows), max(rows), min(cols), max(cols))
+            # Expand by 1 in each direction so the surrounding walls (and door
+            # cells on the border) are included in the room_pixels crop.
+            self._room_bboxes[rid] = (
+                max(0, min(rows) - 1),
+                min(h - 1, max(rows) + 1),
+                max(0, min(cols) - 1),
+                min(w - 1, max(cols) + 1),
+            )
 
         if self._room_bboxes:
             heights = {br - tr + 1 for tr, br, _, _ in self._room_bboxes.values()}
