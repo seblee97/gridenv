@@ -23,9 +23,14 @@ Controls (GridWorldEnv):
 Controls (ModularMazeEnv):
     Arrow keys / WASD  Move agent
     E                  Use key (open adjacent door / open safe)
-    F                  Collect key (pick up key on current cell)
+    F                  Collect key or material (pick up item on current cell)
+    G                  Engage NPC (interact with adjacent NPC)
+    Z                  Forge key (consume ore + material to create a key)
     R                  Reset episode
     ESC / Q            Quit
+
+Procedural generation:
+    python play.py --procgen --n-rooms 6 --distractor --seed 42
 """
 
 import argparse
@@ -45,7 +50,10 @@ GRIDWORLD_HELP = [
 
 MODULAR_HELP = [
     "Arrows/WASD: Move",
-    "E: Use key   F: Collect key",
+    "E: Use key",
+    "F: Collect key/material",
+    "G: Engage NPC",
+    "Z: Forge key",
     "R: Reset   ESC/Q: Quit",
 ]
 
@@ -87,7 +95,26 @@ def parse_args():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=__doc__,
     )
-    parser.add_argument("layout", help="Path to layout .txt file (or world.txt)")
+    parser.add_argument(
+        "layout", nargs="?", default=None,
+        help="Path to layout .txt file (or world.txt). Omit when using --procgen.",
+    )
+    parser.add_argument(
+        "--procgen", action="store_true",
+        help="Generate a random world instead of loading a file.",
+    )
+    parser.add_argument(
+        "--n-rooms", type=int, default=4, metavar="N",
+        help="Number of rooms for procedural generation (default: 4).",
+    )
+    parser.add_argument(
+        "--distractor", action="store_true",
+        help="Add irrelevant elements to rooms in procedural generation.",
+    )
+    parser.add_argument(
+        "--seed", type=int, default=None, metavar="S",
+        help="RNG seed for procedural generation.",
+    )
     parser.add_argument(
         "--posner", action="store_true", help="Enable Posner cueing mode (GridWorldEnv only)"
     )
@@ -215,7 +242,10 @@ def draw_sidebar(
         # ModularMazeEnv
         inv = info["inventory"]
         inv_text = ", ".join(str(k) for k in inv) if inv else "empty"
-        text("INVENTORY", inv_text, color=(200, 200, 100))
+        text("KEYS", inv_text, color=(200, 200, 100))
+        mats = info.get("materials", [])
+        mat_text = ", ".join(str(m) for m in mats) if mats else "empty"
+        text("MATERIALS", mat_text, color=(120, 220, 200))
         safes_opened = info.get("safes_opened", 0)
         safes_total = info.get("safes_total", 0)
         text("SAFES", f"{safes_opened}/{safes_total}", color=(80, 220, 120))
@@ -268,6 +298,10 @@ def main():
         print("pygame is required. Install with: pip install pygame")
         sys.exit(1)
 
+    if not args.procgen and args.layout is None:
+        print("error: provide a layout file or use --procgen to generate one.")
+        sys.exit(1)
+
     try:
         from gridworld_env import GridWorldEnv
         from gridworld_env.environment import Action as GWAction
@@ -276,37 +310,59 @@ def main():
         print("gridworld_env not found. Make sure it's installed or run from the project root.")
         sys.exit(1)
 
-    layout_path = Path(args.layout)
-    is_modular = _is_modular_layout(layout_path)
-
-    if is_modular:
+    if args.procgen:
+        from gridworld_env.procgen import generate_world
+        layout_obj = generate_world(
+            n_rooms=args.n_rooms,
+            distractor=args.distractor,
+            seed=args.seed,
+        )
         use_partial = args.partial_obs
         obs_mode = "room_pixels" if use_partial else "pixels"
         env = ModularMazeEnv(
-            layout=args.layout,
+            layout=layout_obj,
             max_steps=args.max_steps,
             step_reward=args.step_reward,
             obs_mode=obs_mode,
             render_mode="rgb_array" if not use_partial else None,
             show_score=False,
         )
+        caption = f"GridWorld — procgen {args.n_rooms} rooms"
+        is_modular = True
         help_lines = MODULAR_HELP
     else:
-        env = GridWorldEnv(
-            layout=args.layout,
-            posner_mode=args.posner,
-            posner_validity=args.posner_validity,
-            posner_num_features=args.posner_features,
-            max_steps=args.max_steps,
-            random_key_colors=args.random_keys,
-            random_correct_key=args.random_correct_key,
-            step_reward=args.step_reward,
-            obs_mode="pixels",
-            render_mode="rgb_array",
-            debug_cues=args.debug,
-            show_score=False,
-        )
-        help_lines = GRIDWORLD_HELP
+        layout_path = Path(args.layout)
+        is_modular = _is_modular_layout(layout_path)
+        caption = f"GridWorld — {args.layout}"
+
+        if is_modular:
+            use_partial = args.partial_obs
+            obs_mode = "room_pixels" if use_partial else "pixels"
+            env = ModularMazeEnv(
+                layout=args.layout,
+                max_steps=args.max_steps,
+                step_reward=args.step_reward,
+                obs_mode=obs_mode,
+                render_mode="rgb_array" if not use_partial else None,
+                show_score=False,
+            )
+            help_lines = MODULAR_HELP
+        else:
+            env = GridWorldEnv(
+                layout=args.layout,
+                posner_mode=args.posner,
+                posner_validity=args.posner_validity,
+                posner_num_features=args.posner_features,
+                max_steps=args.max_steps,
+                random_key_colors=args.random_keys,
+                random_correct_key=args.random_correct_key,
+                step_reward=args.step_reward,
+                obs_mode="pixels",
+                render_mode="rgb_array",
+                debug_cues=args.debug,
+                show_score=False,
+            )
+            help_lines = GRIDWORLD_HELP
 
     obs, info = env.reset()
     # In partial-obs mode the obs itself is the room-level pixel frame;
@@ -324,7 +380,7 @@ def main():
 
     pygame.init()
     screen = pygame.display.set_mode((total_w, total_h))
-    pygame.display.set_caption(f"GridWorld — {args.layout}")
+    pygame.display.set_caption(caption)
     clock = pygame.time.Clock()
 
     font = pygame.font.SysFont("monospace", 15, bold=True)
@@ -343,6 +399,8 @@ def main():
             pygame.K_d: MMAction.RIGHT,
             pygame.K_e: MMAction.USE_KEY,
             pygame.K_f: MMAction.COLLECT_KEY,
+            pygame.K_g: MMAction.ENGAGE,
+            pygame.K_z: MMAction.FORGE_KEY,
         }
     else:
         key_action_map = {
@@ -380,6 +438,7 @@ def main():
         }
         if is_modular:
             d["inventory"] = info.get("inventory", [])
+            d["materials"] = info.get("materials", [])
             d["safes_opened"] = info.get("safes_opened", 0)
             d["safes_total"] = info.get("safes_total", 0)
             d["score"] = info.get("score", 0.0)
