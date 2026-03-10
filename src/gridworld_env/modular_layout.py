@@ -50,7 +50,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Dict, List, Optional, Set, Tuple, Union
 
-from gridworld_env.modular_objects import ModularKey, Safe, SimpleDoor
+from gridworld_env.modular_objects import MATERIAL_TYPES, Material, ModularKey, NPC, Safe, SimpleDoor
 
 
 @dataclass
@@ -74,6 +74,8 @@ class ModularLayout:
     keys: List[ModularKey] = field(default_factory=list)
     safes: List[Safe] = field(default_factory=list)
     doors: List[SimpleDoor] = field(default_factory=list)
+    npcs: List[NPC] = field(default_factory=list)
+    materials: List[Material] = field(default_factory=list)
     room_cell_map: Optional[Dict[Tuple[int, int], int]] = field(
         default=None, repr=False
     )
@@ -118,6 +120,18 @@ class ModularLayout:
         for safe in self.safes:
             if safe.position == (row, col) and not safe.opened:
                 return safe
+        return None
+
+    def get_npc_adjacent(self, row: int, col: int) -> List[NPC]:
+        """Return all NPCs in the four cells adjacent to (row, col)."""
+        adjacent = {(row + dr, col + dc) for dr, dc in ((-1, 0), (1, 0), (0, -1), (0, 1))}
+        return [npc for npc in self.npcs if npc.position in adjacent]
+
+    def get_material_at(self, row: int, col: int) -> "Optional[Material]":
+        """Return an uncollected material at (row, col), or None."""
+        for mat in self.materials:
+            if mat.position == (row, col) and not mat.collected:
+                return mat
         return None
 
     def copy(self) -> "ModularLayout":
@@ -173,8 +187,15 @@ def parse_modular_layout_string(
     keys: List[ModularKey] = []
     safes: List[Safe] = []
     doors: List[SimpleDoor] = []
+    npcs: List[NPC] = []
+    materials: List[Material] = []
 
+    key_configs: Dict[str, Dict] = config.get("keys", {})
     safe_configs: Dict[str, Dict] = config.get("safes", {})
+    npc_configs: Dict[str, Dict] = config.get("npcs", {})  # keyed by npc_type
+
+    _NPC_CHARS: Dict[str, str] = {"W": "wizard"}
+    _MATERIAL_CHARS: Dict[str, str] = {"V": "diamond", "R": "ruby", "P": "sapphire", "O": "ore"}
 
     for row, line in enumerate(lines):
         for col, char in enumerate(line):
@@ -186,22 +207,46 @@ def parse_modular_layout_string(
                 doors.append(SimpleDoor(position=(row, col)))
             elif char.islower() and char.isalpha():
                 # Lowercase letter → key with that ID
-                keys.append(ModularKey(id=char, position=(row, col)))
+                key_cfg = key_configs.get(char, {})
+                keys.append(ModularKey(
+                    id=char,
+                    position=(row, col),
+                    unique_material=key_cfg.get("unique_material", ""),
+                ))
             elif char.isdigit() and char != "0":
                 # Non-zero digit → safe with that ID
                 safe_cfg = safe_configs.get(char, {})
                 safes.append(Safe(
                     id=char,
                     position=(row, col),
-                    unlocked_by=list(safe_cfg.get("unlocked_by", [])),
+                    unique_material=safe_cfg.get("unique_material", ""),
                     reward=float(safe_cfg.get("reward", 0.0)),
+                ))
+            elif char in _NPC_CHARS:
+                npc_type = _NPC_CHARS[char]
+                npc_cfg = npc_configs.get(npc_type, {})
+                npcs.append(NPC(
+                    npc_type=npc_type,
+                    position=(row, col),
+                    key_type=npc_cfg.get("key_type", ""),
+                ))
+            elif char in _MATERIAL_CHARS:
+                mat_type = _MATERIAL_CHARS[char]
+                mat_info = MATERIAL_TYPES.get(mat_type, {"color": "", "shape": ""})
+                materials.append(Material(
+                    name=mat_type,
+                    color=mat_info["color"],
+                    shape=mat_info["shape"],
+                    position=(row, col),
                 ))
             elif char == ".":
                 pass  # empty floor
             else:
                 raise ValueError(
                     f"Unexpected character '{char}' at row {row}, col {col}. "
-                    "Valid characters: #  .  S  D  a-z (keys)  1-9 (safes)"
+                    "Valid characters: #  .  S  D  "
+                    "W (wizard NPC)  V (diamond)  R (ruby)  P (sapphire)  O (ore)  "
+                    "a-z (keys)  1-9 (safes)"
                 )
 
     return ModularLayout(
@@ -212,6 +257,8 @@ def parse_modular_layout_string(
         keys=keys,
         safes=safes,
         doors=doors,
+        npcs=npcs,
+        materials=materials,
     )
 
 
