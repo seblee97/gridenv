@@ -63,7 +63,7 @@ from pathlib import Path
 from typing import Dict, List, Optional, Set, Tuple, Union
 
 from gridworld_env.modular_layout import ModularLayout
-from gridworld_env.modular_objects import ModularKey, Safe, SimpleDoor
+from gridworld_env.modular_objects import MATERIAL_TYPES, Material, ModularKey, NPC, Safe, SimpleDoor
 
 
 # ---------------------------------------------------------------------------
@@ -81,6 +81,8 @@ class RoomSpec:
     start_position: Optional[Tuple[int, int]]  # None if no 'S' in this room
     keys: List[Tuple[str, int, int]]           # (id, row, col) within room
     safes: List[Tuple[str, int, int]]          # (id, row, col) within room
+    npcs: List[Tuple[str, int, int]]           # (npc_type, row, col) within room
+    materials: List[Tuple[str, int, int]]      # (mat_type, row, col) within room
     connectors: Dict[str, int]
     """Mapping from side name to offset along that side.
 
@@ -142,7 +144,12 @@ def parse_room_file(path: Union[str, Path], room_id: int) -> RoomSpec:
     start_position: Optional[Tuple[int, int]] = None
     keys: List[Tuple[str, int, int]] = []
     safes: List[Tuple[str, int, int]] = []
+    npcs: List[Tuple[str, int, int]] = []
+    materials: List[Tuple[str, int, int]] = []   # (instance_char, row, col)
     connectors: Dict[str, int] = {}
+
+    _NPC_CHARS: Dict[str, str] = {"W": "wizard"}
+    _MATERIAL_CHARS: Dict[str, str] = {"V": "diamond", "R": "ruby", "P": "sapphire", "O": "ore"}
 
     for row, line in enumerate(lines):
         for col, char in enumerate(line):
@@ -184,13 +191,21 @@ def parse_room_file(path: Union[str, Path], room_id: int) -> RoomSpec:
             elif char.isdigit() and char != "0":
                 safes.append((char, row, col))
 
+            elif char in _NPC_CHARS:
+                npcs.append((_NPC_CHARS[char], row, col))
+
+            elif char in _MATERIAL_CHARS:
+                materials.append((_MATERIAL_CHARS[char], row, col))
+
             elif char == ".":
                 pass  # empty floor
 
             else:
                 raise ValueError(
                     f"Room '{path}': unexpected character '{char}' at ({row}, {col}). "
-                    "Valid: # . S + a-z 1-9"
+                    "Valid: # . S + "
+                    "W (wizard NPC)  V (diamond)  R (ruby)  P (sapphire)  O (ore)  "
+                    "a-z (keys)  1-9 (safes)"
                 )
 
     return RoomSpec(
@@ -201,6 +216,8 @@ def parse_room_file(path: Union[str, Path], room_id: int) -> RoomSpec:
         start_position=start_position,
         keys=keys,
         safes=safes,
+        npcs=npcs,
+        materials=materials,
         connectors=connectors,
     )
 
@@ -303,7 +320,9 @@ def assemble_world(
     :class:`ModularLayout` with ``room_cell_map`` populated.
     """
     json_config = json_config or {}
+    key_configs: Dict[str, Dict] = json_config.get("keys", {})
     safe_configs: Dict[str, Dict] = json_config.get("safes", {})
+    npc_configs: Dict[str, Dict] = json_config.get("npcs", {})  # keyed by npc_type
 
     # --- Parse all room files -------------------------------------------
     rooms: Dict[int, RoomSpec] = {
@@ -398,23 +417,43 @@ def assemble_world(
         doors.append(SimpleDoor(position=door_pos))
         room_cell_map.pop(door_pos, None)   # door cells belong to no room
 
-    # --- Collect keys and safes with global coordinates ------------------
+    # --- Collect keys, safes, NPCs, and materials with global coordinates -
     all_keys: List[ModularKey] = []
     all_safes: List[Safe] = []
+    all_npcs: List[NPC] = []
+    all_materials: List[Material] = []
 
     for rid, room in rooms.items():
         rTop, cTop = global_top_left[rid]
         for (kid, kr, kc) in room.keys:
-            all_keys.append(
-                ModularKey(id=kid, position=(rTop + kr, cTop + kc))
-            )
+            key_cfg = key_configs.get(kid, {})
+            all_keys.append(ModularKey(
+                id=kid,
+                position=(rTop + kr, cTop + kc),
+                unique_material=key_cfg.get("unique_material", ""),
+            ))
         for (sid, sr, sc) in room.safes:
             cfg = safe_configs.get(sid, {})
             all_safes.append(Safe(
                 id=sid,
                 position=(rTop + sr, cTop + sc),
-                unlocked_by=list(cfg.get("unlocked_by", [])),
+                unique_material=cfg.get("unique_material", ""),
                 reward=float(cfg.get("reward", 0.0)),
+            ))
+        for (npc_type, nr, nc) in room.npcs:
+            npc_cfg = npc_configs.get(npc_type, {})
+            all_npcs.append(NPC(
+                npc_type=npc_type,
+                position=(rTop + nr, cTop + nc),
+                key_type=npc_cfg.get("key_type", ""),
+            ))
+        for (mat_type, mr, mc) in room.materials:
+            mat_info = MATERIAL_TYPES.get(mat_type, {"color": "", "shape": ""})
+            all_materials.append(Material(
+                name=mat_type,
+                color=mat_info["color"],
+                shape=mat_info["shape"],
+                position=(rTop + mr, cTop + mc),
             ))
 
     # --- Global start position -------------------------------------------
@@ -430,6 +469,8 @@ def assemble_world(
         keys=all_keys,
         safes=all_safes,
         doors=doors,
+        npcs=all_npcs,
+        materials=all_materials,
         room_cell_map=room_cell_map,
     )
 
