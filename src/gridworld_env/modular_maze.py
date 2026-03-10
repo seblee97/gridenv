@@ -49,7 +49,7 @@ from gridworld_env.modular_layout import (
     parse_modular_layout_file,
     parse_modular_layout_string,
 )
-from gridworld_env.modular_objects import ModularKey, Safe, SimpleDoor
+from gridworld_env.modular_objects import ModularKey, NPC, Safe, SimpleDoor
 from gridworld_env.world_layout import parse_world_layout_file
 
 
@@ -60,6 +60,8 @@ class _Action(IntEnum):
     RIGHT = 3
     USE_KEY = 4
     COLLECT_KEY = 5
+    ENGAGE = 6
+    FORGE_KEY = 7
 
 
 class ModularCellType(IntEnum):
@@ -72,6 +74,9 @@ class ModularCellType(IntEnum):
     SAFE_OPEN = 5
     DOOR_CLOSED = 6
     DOOR_OPEN = 7
+    NPC = 8
+    NPC_ENGAGED = 9
+    MATERIAL = 10
 
 
 _DELTAS = {
@@ -221,14 +226,15 @@ class ModularMazeEnv(gym.Env):
         # ------------------------------------------------------------------
         self._layout: Optional[ModularLayout] = None
         self._agent_pos: Tuple[int, int] = (0, 0)
-        self._inventory: Set[str] = set()   # collected key IDs
+        self._inventory: Set[str] = set()            # collected key IDs
+        self._material_inventory: List[str] = []    # collected material names, FIFO order
         self._steps: int = 0
         self._last_valid_room: int = 0      # for room_pixels when on door cell
 
         # ------------------------------------------------------------------
         # Spaces
         # ------------------------------------------------------------------
-        self.action_space = spaces.Discrete(6)
+        self.action_space = spaces.Discrete(8)
 
         n_cell_types = len(ModularCellType)
         grid_shape = (self._base_layout.height, self._base_layout.width)
@@ -380,6 +386,7 @@ class ModularMazeEnv(gym.Env):
             self._agent_pos = self._layout.start_position
 
         self._inventory = set()
+        self._material_inventory = []
         self._steps = 0
         self._last_valid_room = self._cell_to_room.get(
             self._layout.start_position, 0
@@ -404,6 +411,10 @@ class ModularMazeEnv(gym.Env):
             reward += self._use_key()
         elif a == _Action.COLLECT_KEY:
             self._collect_key()
+        elif a == _Action.ENGAGE:
+            self._engage_npc()
+        elif a == _Action.FORGE_KEY:
+            self._forge_key()
         else:
             move_reward, moved = self._handle_movement(a)
             reward += move_reward
@@ -444,6 +455,10 @@ class ModularMazeEnv(gym.Env):
         if door is not None and not door.is_open:
             return self.collision_reward, False
 
+        # NPC cells block movement (engage from adjacent instead)
+        if any(npc.position == new_pos for npc in self._layout.npcs):
+            return self.collision_reward, False
+
         self._agent_pos = new_pos
         return 0.0, True
 
@@ -454,14 +469,18 @@ class ModularMazeEnv(gym.Env):
     def _collect_key(self) -> None:
         """Execute the COLLECT_KEY action.
 
-        Picks up the key at the agent's current position (if any and not already
-        collected).  No-op if the cell contains no key.
+        Picks up the key or material at the agent's current position (if any
+        and not already collected).  No-op if the cell contains neither.
         """
         row, col = self._agent_pos
         key = self._layout.get_key_at(row, col)
         if key is not None:
             key.collected = True
             self._inventory.add(key.id)
+        material = self._layout.get_material_at(row, col)
+        if material is not None:
+            material.collected = True
+            self._material_inventory.append(material.name)
 
     def _use_key(self) -> float:
         """Execute the USE_KEY action.
@@ -487,7 +506,8 @@ class ModularMazeEnv(gym.Env):
 
         # Open safe at current position
         safe = self._layout.get_safe_at(row, col)
-        if safe is not None and safe.can_open_with(self._inventory):
+        held_materials = {k.unique_material for k in self._layout.keys if k.collected}
+        if safe is not None and safe.can_open_with(held_materials):
             safe.opened = True
             reward += safe.reward
 
@@ -498,6 +518,78 @@ class ModularMazeEnv(gym.Env):
                 door.is_open = True
 
         return reward
+
+    def _engage_npc(self) -> None:
+        """Execute the ENGAGE action.
+
+        Marks all NPCs adjacent to the agent as engaged.  On the first
+        engagement, if the NPC has a key_type set, a key of that type is
+        spawned at a random unoccupied floor cell in the same room.
+        """
+        row, col = self._agent_pos
+        for npc in self._layout.get_npc_adjacent(row, col):
+            if not npc.engaged:
+                npc.engaged = True
+                if npc.key_type:
+                    self._spawn_key_in_room(npc.position, npc.key_type)
+
+    def _spawn_key_in_room(self, ref_pos: Tuple[int, int], key_type: str) -> None:
+        """Spawn a key with the given unique_material at a random free floor cell
+        in the same room as ref_pos.  No-op if no free cell is available."""
+        room_id = self._cell_to_room.get(ref_pos)
+        if room_id is None:
+            return
+
+        candidates = [pos for pos, rid in self._cell_to_room.items() if rid == room_id]
+
+        occupied: Set[Tuple[int, int]] = {self._agent_pos}
+        occupied |= {d.position for d in self._layout.doors}
+        occupied |= {k.position for k in self._layout.keys if not k.collected}
+        occupied |= {s.position for s in self._layout.safes}
+        occupied |= {n.position for n in self._layout.npcs}
+        occupied |= {m.position for m in self._layout.materials if not m.collected}
+
+        free = [pos for pos in candidates if pos not in occupied]
+        if not free:
+            return
+
+        spawn_pos = free[int(self.np_random.integers(len(free)))]
+        self._layout.keys.append(ModularKey(
+            id=f"wizard_{key_type}",
+            position=spawn_pos,
+            unique_material=key_type,
+            collected=False,
+        ))
+
+    def _forge_key(self) -> None:
+        """Execute the FORGE_KEY action.
+
+        Consumes one ore and the first (FIFO) non-ore material from the
+        material inventory to produce a key whose unique_material matches
+        that non-ore material.  The forged key is immediately collected.
+        No-op if ore is absent or no non-ore material is held.
+        """
+        inv = self._material_inventory
+        if "ore" not in inv:
+            return
+
+        # First non-ore material in collection order (FIFO)
+        target_mat = next((m for m in inv if m != "ore"), None)
+        if target_mat is None:
+            return  # only ore in inventory, nothing to pair it with
+
+        inv.remove("ore")        # removes first occurrence
+        inv.remove(target_mat)   # removes first occurrence (= FIFO material)
+
+        forge_id = f"forge_{target_mat}"
+        forged = ModularKey(
+            id=forge_id,
+            position=(0, 0),
+            unique_material=target_mat,
+            collected=True,
+        )
+        self._layout.keys.append(forged)
+        self._inventory.add(forge_id)
 
     def _all_safes_opened(self) -> bool:
         return all(s.opened for s in self._layout.safes)
@@ -675,6 +767,14 @@ class ModularMazeEnv(gym.Env):
             ct = ModularCellType.DOOR_OPEN if door.is_open else ModularCellType.DOOR_CLOSED
             grid[door.position[0], door.position[1]] = ct
 
+        for npc in layout.npcs:
+            ct = ModularCellType.NPC_ENGAGED if npc.engaged else ModularCellType.NPC
+            grid[npc.position[0], npc.position[1]] = ct
+
+        for mat in layout.materials:
+            if not mat.collected:
+                grid[mat.position[0], mat.position[1]] = ModularCellType.MATERIAL
+
         grid[self._agent_pos[0], self._agent_pos[1]] = ModularCellType.AGENT
 
         return grid
@@ -689,6 +789,7 @@ class ModularMazeEnv(gym.Env):
         return {
             "steps": self._steps,
             "inventory": sorted(self._inventory),
+            "materials": sorted(self._material_inventory),
             "agent_pos": self._agent_pos,
             "safes_opened": sum(1 for s in layout.safes if s.opened),
             "safes_total": self._n_safes,
@@ -997,6 +1098,17 @@ class ModularMazeEnv(gym.Env):
                     line += "*"
                     continue
 
+                npc = next((n for n in layout.npcs if n.position == pos), None)
+                if npc is not None:
+                    char = "W" if npc.npc_type == "wizard" else "N"
+                    line += char.lower() if npc.engaged else char
+                    continue
+
+                mat = layout.get_material_at(row, col)
+                if mat is not None:
+                    line += mat.name[0].upper()
+                    continue
+
                 line += "."
             lines.append(line)
 
@@ -1016,9 +1128,24 @@ class ModularMazeEnv(gym.Env):
         "safe_open":   (180, 140, 90),
         "door_closed": (100, 60,  20),
         "door_open":   (160, 120, 80),
-        "status_bg":   (30,  30,  30),
+        "npc_wizard":          (160, 80,  220),
+        "npc_wizard_engaged":  (220, 180, 255),
+        "status_bg":           (30,  30,  30),
         "text":        (255, 255, 255),
     }
+
+    # Material name → base RGB (matches color strings in modular_objects.py)
+    _MATERIAL_COLORS = {
+        "diamond":  (0,   210, 210),  # cyan
+        "ruby":     (210,  50,  50),  # red
+        "sapphire": (50,   80, 210),  # blue
+        "ore":      (160, 160, 160),  # gray
+    }
+
+    def _material_rgb(self, material_name: str, brightness: float = 1.0) -> tuple:
+        """Return an RGB tuple for a material, scaled by brightness (0–1)."""
+        base = self._MATERIAL_COLORS.get(material_name, self._COLORS["key"])
+        return tuple(min(255, int(v * brightness)) for v in base)
 
     def _render_pygame_surface(self) -> np.ndarray:
         """Render using pygame and return an RGB array."""
@@ -1056,7 +1183,8 @@ class ModularMazeEnv(gym.Env):
         # Safes
         for safe in layout.safes:
             r, c = safe.position
-            color = C["safe_open"] if safe.opened else C["safe_closed"]
+            brightness = 0.9 if safe.opened else 0.55
+            color = self._material_rgb(safe.unique_material, brightness)
             pygame.draw.rect(
                 surf, color, pygame.Rect(c * cs + 2, r * cs + 2, cs - 4, cs - 4)
             )
@@ -1071,14 +1199,35 @@ class ModularMazeEnv(gym.Env):
                 r, c = key.position
                 kx = c * cs + cs // 2
                 ky = r * cs + cs // 2
+                key_color = self._material_rgb(key.unique_material)
                 # Key bow (circle with hole)
-                pygame.draw.circle(surf, C["key"], (kx, ky - cs // 4), cs // 5)
+                pygame.draw.circle(surf, key_color, (kx, ky - cs // 4), cs // 5)
                 pygame.draw.circle(surf, C["floor"], (kx, ky - cs // 4), cs // 10)
                 # Key shaft
                 pygame.draw.rect(
-                    surf, C["key"],
+                    surf, key_color,
                     pygame.Rect(kx - 3, ky - cs // 4, 6, cs // 2),
                 )
+
+        # NPCs
+        for npc in layout.npcs:
+            r, c = npc.position
+            color_key = f"npc_{npc.npc_type}_engaged" if npc.engaged else f"npc_{npc.npc_type}"
+            npc_color = C.get(color_key, (160, 80, 220))
+            nx, ny = c * cs + cs // 2, r * cs + cs // 2
+            pygame.draw.circle(surf, npc_color, (nx, ny), cs // 3)
+            outline_color = (255, 255, 180) if npc.engaged else (255, 255, 255)
+            pygame.draw.circle(surf, outline_color, (nx, ny), cs // 3, 2)
+
+        # Materials
+        for mat in layout.materials:
+            if not mat.collected:
+                r, c = mat.position
+                mat_color = self._material_rgb(mat.name)
+                mx, my = c * cs + cs // 2, r * cs + cs // 2
+                half = cs // 3
+                points = [(mx, my - half), (mx + half, my), (mx, my + half), (mx - half, my)]
+                pygame.draw.polygon(surf, mat_color, points)
 
         # Agent
         ar, ac = self._agent_pos
@@ -1129,7 +1278,8 @@ class ModularMazeEnv(gym.Env):
         # Safes
         for safe in layout.safes:
             r, c = safe.position
-            color = C["safe_open"] if safe.opened else C["safe_closed"]
+            brightness = 0.9 if safe.opened else 0.55
+            color = self._material_rgb(safe.unique_material, brightness)
             m = 2
             img[r * cs + m:(r + 1) * cs - m, c * cs + m:(c + 1) * cs - m] = color
 
@@ -1138,7 +1288,22 @@ class ModularMazeEnv(gym.Env):
             if not key.collected:
                 r, c = key.position
                 m = cs // 4
-                img[r * cs + m:(r + 1) * cs - m, c * cs + m:(c + 1) * cs - m] = C["key"]
+                img[r * cs + m:(r + 1) * cs - m, c * cs + m:(c + 1) * cs - m] = self._material_rgb(key.unique_material)
+
+        # NPCs
+        for npc in layout.npcs:
+            r, c = npc.position
+            color_key = f"npc_{npc.npc_type}_engaged" if npc.engaged else f"npc_{npc.npc_type}"
+            npc_color = C.get(color_key, (160, 80, 220))
+            m = cs // 4
+            img[r * cs + m:(r + 1) * cs - m, c * cs + m:(c + 1) * cs - m] = npc_color
+
+        # Materials
+        for mat in layout.materials:
+            if not mat.collected:
+                r, c = mat.position
+                m = cs // 3
+                img[r * cs + m:(r + 1) * cs - m, c * cs + m:(c + 1) * cs - m] = self._material_rgb(mat.name)
 
         # Agent
         ar, ac = self._agent_pos
