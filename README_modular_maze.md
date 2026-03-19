@@ -298,11 +298,16 @@ python play.py --procgen --n-rooms 6 --partial-obs
 | Flag | Default | Description |
 |------|---------|-------------|
 | `layout` | — | Path to a `.txt` layout or world file |
-| `--procgen` | off | Generate world with BSP instead of loading a file |
+| `--procgen` | off | Generate world instead of loading a file |
+| `--procgen-method METHOD` | `bsp` | `bsp` (variable-sized rooms) or `grid` (equal-sized rooms) |
 | `--n-rooms N` | 4 | Number of rooms for procgen |
+| `--room-h N` | 9 | Room height in cells (including walls) for `--procgen-method grid` |
+| `--room-w N` | 11 | Room width in cells (including walls) for `--procgen-method grid` |
 | `--distractor` | off | Add irrelevant elements to procgen rooms |
 | `--seed S` | random | RNG seed for procgen |
-| `--partial-obs` | off | Show only the current room |
+| `--partial-obs` | off | Show only the current room (`obs_mode="room_pixels"`) |
+| `--global-map-mode MODE` | off | Add room-level minimap: `overlay`, `beside`, `image`, or `onehot` |
+| `--map-cell-size PX` | 8 | Pixel size per room cell in the global map |
 | `--cell-size PX` | 48 | Pixel size per grid cell |
 | `--fps N` | 60 | Frame rate cap |
 | `--max-steps N` | unlimited | Episode length limit |

@@ -197,7 +197,7 @@ def parse_args():
         help="Partial observability: show only the current room (ModularMazeEnv only)",
     )
     parser.add_argument(
-        "--global-map",
+        "--global-map-mode",
         choices=["overlay", "image", "onehot", "beside"],
         default=None,
         metavar="MODE",
@@ -369,7 +369,7 @@ def main():
             obs_mode=obs_mode,
             render_mode="rgb_array" if not use_partial else None,
             show_score=False,
-            global_map_mode=args.global_map,
+            global_map_mode=args.global_map_mode,
             map_cell_size=args.map_cell_size,
         )
         caption = f"GridWorld — procgen {args.n_rooms} rooms"
@@ -390,7 +390,7 @@ def main():
                 obs_mode=obs_mode,
                 render_mode="rgb_array" if not use_partial else None,
                 show_score=False,
-                global_map_mode=args.global_map,
+                global_map_mode=args.global_map_mode,
                 map_cell_size=args.map_cell_size,
             )
             help_lines = MODULAR_HELP
