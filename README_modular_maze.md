@@ -15,10 +15,11 @@ generated procedurally.
 4. [Opening doors](#4-opening-doors)
 5. [Room types (procgen)](#5-room-types-procgen)
 6. [Observation modes](#6-observation-modes)
-7. [Play mode](#7-play-mode)
-8. [Layout file format](#8-layout-file-format)
-9. [Multi-room world files](#9-multi-room-world-files)
-10. [Python API](#10-python-api)
+7. [Global map view](#7-global-map-view)
+8. [Play mode](#8-play-mode)
+9. [Layout file format](#9-layout-file-format)
+10. [Multi-room world files](#10-multi-room-world-files)
+11. [Python API](#11-python-api)
 
 ---
 
@@ -205,9 +206,66 @@ obs["pixels"]   # full-map RGB array
 obs["symbolic"] # flat symbolic vector
 ```
 
+### `macro`
+
+Room-level structural observation (no grid pixels):
+- **Room adjacency matrix**: `N_rooms × N_rooms` binary matrix — entry `(i, j) = 1` if rooms `i` and `j` share a door
+- **Current room**: integer index of the agent's current room
+
 ---
 
-## 7. Play mode
+## 7. Global map view
+
+An optional room-resolution minimap can be added on top of any observation mode via the `global_map_mode` parameter.  The map indicates **which room the agent is in** without revealing anything at the cell level.
+
+### How it works
+
+The map is a compact grid where each cell represents one room.  Room positions in the grid are inferred automatically from the spatial layout of room bounding boxes.  The agent's current room is highlighted in **cyan**; all other rooms are dark grey.
+
+### `global_map_mode="overlay"`
+
+The minimap is drawn directly in the **top-right corner** of the pixel observation.  The observation space shape is unchanged — the map is burned into the pixel image.
+
+Requires `obs_mode` to be `"pixels"`, `"room_pixels"`, or `"both"`.
+
+```python
+env = ModularMazeEnv(layout, obs_mode="pixels", global_map_mode="overlay")
+obs, _ = env.reset()   # obs is a normal (H, W, 3) array with map in corner
+```
+
+### `global_map_mode="image"`
+
+The observation becomes a Dict with the primary observation and a **separate map image** sized to the room grid.  Intended for architectures that process the global map in a parallel stream.
+
+```python
+env = ModularMazeEnv(layout, obs_mode="pixels", global_map_mode="image")
+obs, _ = env.reset()
+obs["obs"]       # primary pixel observation, shape (H, W, 3)
+obs["map_image"] # room-grid image, shape (map_rows*cs, map_cols*cs, 3)
+```
+
+### `global_map_mode="onehot"`
+
+The observation becomes a Dict with the primary observation and a **one-hot room vector**.  Works with any `obs_mode`.
+
+```python
+env = ModularMazeEnv(layout, obs_mode="symbolic", global_map_mode="onehot")
+obs, _ = env.reset()
+obs["obs"]        # primary symbolic observation
+obs["room_onehot"] # float32 vector, length = n_rooms, 1.0 at current room
+```
+
+### `map_cell_size` parameter
+
+Controls the pixel size of each room square in the minimap for `"overlay"` and `"image"` modes (default `8`).
+
+```python
+env = ModularMazeEnv(layout, obs_mode="pixels", global_map_mode="image", map_cell_size=16)
+```
+
+---
+
+## 8. Play mode
 
 Run `play.py` from the project root.
 
@@ -267,7 +325,7 @@ material inventory, and safe progress.
 
 ---
 
-## 8. Layout file format
+## 9. Layout file format
 
 A single-room layout is a plain-text ASCII grid:
 
@@ -316,7 +374,7 @@ Safes without a config entry are openable by any key and give zero reward.
 
 ---
 
-## 9. Multi-room world files
+## 10. Multi-room world files
 
 A world is a directory containing:
 
@@ -345,7 +403,7 @@ on the shared border wall.
 
 ---
 
-## 10. Python API
+## 11. Python API
 
 ```python
 from gridworld_env.modular_maze import ModularMazeEnv
@@ -391,7 +449,9 @@ info["score"]          # float: cumulative reward
 | `step_reward` | `-0.01` | Reward added each step |
 | `collision_reward` | `-0.1` | Reward for walking into a wall |
 | `flatten_obs` | `True` | Flatten symbolic observations to 1-D |
-| `obs_mode` | `"symbolic"` | Observation mode (see [above](#6-observation-modes)) |
+| `obs_mode` | `"symbolic"` | Observation mode (see [§6](#6-observation-modes)) |
 | `render_mode` | `None` | `"human"`, `"rgb_array"`, or `None` |
 | `start_pos_mode` | `"fixed"` | `"fixed"` or `"random_in_room"` |
 | `terminate_on_all_safes_opened` | `True` | End episode when all safes are opened |
+| `global_map_mode` | `None` | `"overlay"`, `"image"`, `"onehot"`, or `None` (see [§7](#7-global-map-view)) |
+| `map_cell_size` | `8` | Pixel size per room cell in the minimap |

@@ -368,6 +368,204 @@ def generate_world(
 
 
 # ---------------------------------------------------------------------------
+# Grid-based procgen (equal-sized rooms)
+# ---------------------------------------------------------------------------
+
+def generate_world_grid(
+    n_rooms: int,
+    distractor: bool = False,
+    seed: Optional[int] = None,
+    room_h: int = 9,
+    room_w: int = 11,
+) -> ModularLayout:
+    """Generate a random N-room :class:`~gridworld_env.modular_layout.ModularLayout`
+    using a regular grid of equal-sized rooms.
+
+    All rooms share the same ``room_h × room_w`` bounding box (including border
+    walls), so the layout is compatible with ``obs_mode='room_pixels'`` and
+    ``global_map_mode='overlay'`` + ``--partial-obs``.
+
+    Rooms are arranged in a roughly square grid; doors are placed on the shared
+    wall between every pair of horizontally or vertically adjacent rooms.
+
+    Parameters
+    ----------
+    n_rooms:
+        Number of rooms (1–26).
+    distractor:
+        If True, rooms may contain an extra irrelevant element.
+    seed:
+        RNG seed for reproducibility.
+    room_h:
+        Height of each room in cells, including border walls (minimum 5).
+    room_w:
+        Width of each room in cells, including border walls (minimum 5).
+    """
+    if not 1 <= n_rooms <= 26:
+        raise ValueError(f"n_rooms must be between 1 and 26, got {n_rooms}.")
+    if room_h < 5 or room_w < 5:
+        raise ValueError("Minimum room dimension is 5.")
+
+    rng = np.random.default_rng(seed)
+
+    n_cols = math.ceil(math.sqrt(n_rooms))
+    n_rows = math.ceil(n_rooms / n_cols)
+
+    total_h = n_rows * (room_h - 1) + 1
+    total_w = n_cols * (room_w - 1) + 1
+
+    # Build grid (all walls), then carve interiors.
+    grid: List[List[bool]] = [[True] * total_w for _ in range(total_h)]
+    room_interiors: Dict[int, List[Tuple[int, int]]] = {}
+    room_cell_map: Dict[Tuple[int, int], int] = {}
+
+    def _room_top_left(room_idx: int) -> Tuple[int, int]:
+        ri, ci = divmod(room_idx, n_cols)
+        return ri * (room_h - 1), ci * (room_w - 1)
+
+    for i in range(n_rooms):
+        top, left = _room_top_left(i)
+        cells: List[Tuple[int, int]] = []
+        for r in range(top + 1, top + room_h - 1):
+            for c in range(left + 1, left + room_w - 1):
+                grid[r][c] = False
+                room_cell_map[(r, c)] = i
+                cells.append((r, c))
+        room_interiors[i] = cells
+
+    # Place doors on shared walls between adjacent room pairs.
+    doors: List[SimpleDoor] = []
+    door_positions: Set[Tuple[int, int]] = set()
+
+    for i in range(n_rooms):
+        top_i, left_i = _room_top_left(i)
+        ri, ci = divmod(i, n_cols)
+
+        # Right neighbour (same row, next column).
+        j = i + 1
+        if ci + 1 < n_cols and j < n_rooms:
+            shared_col = left_i + room_w - 1
+            valid_rows = list(range(top_i + 1, top_i + room_h - 1))
+            dr = valid_rows[int(rng.integers(len(valid_rows)))]
+            grid[dr][shared_col] = False
+            doors.append(SimpleDoor(position=(dr, shared_col)))
+            door_positions.add((dr, shared_col))
+
+        # Bottom neighbour (next row, same column).
+        j = i + n_cols
+        if ri + 1 < n_rows and j < n_rooms:
+            shared_row = top_i + room_h - 1
+            valid_cols = list(range(left_i + 1, left_i + room_w - 1))
+            dc = valid_cols[int(rng.integers(len(valid_cols)))]
+            grid[shared_row][dc] = False
+            doors.append(SimpleDoor(position=(shared_row, dc)))
+            door_positions.add((shared_row, dc))
+
+    for dp in door_positions:
+        room_cell_map.pop(dp, None)
+
+    # Assign room types and objects (identical logic to BSP generator).
+    base_materials = [_MATERIALS[i % len(_MATERIALS)] for i in range(n_rooms)]
+    perm = rng.permutation(n_rooms)
+    safe_materials: List[str] = [base_materials[i] for i in perm]
+    room_types: List[int] = [int(rng.integers(1, 4)) for _ in range(n_rooms)]
+
+    keys: List[ModularKey] = []
+    safes: List[Safe] = []
+    npcs: List[NPC] = []
+    materials: List[Material] = []
+    start_position: Optional[Tuple[int, int]] = None
+
+    for room_idx in range(n_rooms):
+        interior = list(room_interiors[room_idx])
+        occupied: Set[Tuple[int, int]] = set()
+
+        def pick(rng=rng, interior=interior, occupied=occupied) -> Tuple[int, int]:
+            free = [p for p in interior if p not in occupied]
+            pos = free[int(rng.integers(len(free)))]
+            occupied.add(pos)
+            return pos
+
+        safe_mat = safe_materials[room_idx]
+        rtype = room_types[room_idx]
+
+        if room_idx == 0:
+            start_position = pick()
+
+        safes.append(Safe(
+            id=str(room_idx + 1),
+            position=pick(),
+            unique_material=safe_mat,
+            reward=1.0,
+        ))
+
+        if rtype == 1:
+            keys.append(ModularKey(
+                id=chr(ord("a") + room_idx),
+                position=pick(),
+                unique_material=safe_mat,
+            ))
+        elif rtype == 2:
+            mat_info = MATERIAL_TYPES[safe_mat]
+            materials.append(Material(
+                name="ore",
+                color=MATERIAL_TYPES["ore"]["color"],
+                shape=MATERIAL_TYPES["ore"]["shape"],
+                position=pick(),
+            ))
+            materials.append(Material(
+                name=safe_mat,
+                color=mat_info["color"],
+                shape=mat_info["shape"],
+                position=pick(),
+            ))
+        elif rtype == 3:
+            npcs.append(NPC(
+                npc_type="wizard",
+                position=pick(),
+                key_type=safe_mat,
+            ))
+
+        if distractor and rng.random() < 0.5:
+            wrong_mat = _pick_other(rng, safe_mat)
+            if rtype == 1:
+                npcs.append(NPC(
+                    npc_type="wizard",
+                    position=pick(),
+                    key_type=wrong_mat,
+                ))
+            elif rtype == 2:
+                wm_info = MATERIAL_TYPES[wrong_mat]
+                materials.append(Material(
+                    name=wrong_mat,
+                    color=wm_info["color"],
+                    shape=wm_info["shape"],
+                    position=pick(),
+                ))
+            elif rtype == 3:
+                keys.append(ModularKey(
+                    id=f"distractor_{room_idx}",
+                    position=pick(),
+                    unique_material=wrong_mat,
+                ))
+
+    assert start_position is not None
+
+    return ModularLayout(
+        grid=grid,
+        width=total_w,
+        height=total_h,
+        start_position=start_position,
+        keys=keys,
+        safes=safes,
+        doors=doors,
+        npcs=npcs,
+        materials=materials,
+        room_cell_map=room_cell_map,
+    )
+
+
+# ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
 

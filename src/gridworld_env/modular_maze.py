@@ -30,6 +30,22 @@ pixels
 both
     Dict with ``"pixels"`` and ``"symbolic"`` keys.
 
+Global map view (``global_map_mode`` parameter)
+-----------------------------------------------
+An optional room-resolution minimap can be added to any observation mode via
+the ``global_map_mode`` parameter.
+
+overlay
+    A small minimap is drawn in the top-right corner of the pixel image.
+    The current room is highlighted in cyan.  Requires a pixel-producing
+    ``obs_mode``.  The observation-space shape is unchanged.
+image
+    The observation becomes a Dict with ``"obs"`` (primary) and
+    ``"map_image"`` (small RGB array, one coloured square per room).
+onehot
+    The observation becomes a Dict with ``"obs"`` (primary) and
+    ``"room_onehot"`` (float32 one-hot vector of length ``n_rooms``).
+
 Cell types (for the symbolic grid)
 -----------------------------------
 EMPTY=0  WALL=1  AGENT=2  KEY=3  SAFE_CLOSED=4  SAFE_OPEN=5
@@ -135,6 +151,32 @@ class ModularMazeEnv(gym.Env):
         (flood-fill from S, stopping at walls and doors).
     terminate_on_all_safes_opened:
         End the episode (``terminated=True``) once every safe has been opened.
+    global_map_mode:
+        Optional global map view showing room-level structure.  Three options:
+
+        ``"overlay"``
+            A small minimap is rendered in the top-right corner of the pixel
+            observation (requires a pixel-producing ``obs_mode``).  The map
+            shows each room as a coloured square; the agent's current room is
+            highlighted in cyan.  The observation space shape is unchanged.
+
+        ``"image"``
+            The observation becomes a :class:`gymnasium.spaces.Dict` with two
+            keys: ``"obs"`` (the primary observation from ``obs_mode``) and
+            ``"map_image"`` (an ``(map_rows*map_cell_size, map_cols*map_cell_size, 3)``
+            uint8 array showing the room layout, current room highlighted).
+
+        ``"onehot"``
+            The observation becomes a :class:`gymnasium.spaces.Dict` with two
+            keys: ``"obs"`` (the primary observation) and ``"room_onehot"``
+            (a float32 vector of length ``n_rooms`` with a 1 at the agent's
+            current room index).
+
+        ``None`` (default)
+            No global map is added.
+    map_cell_size:
+        Pixel size of each room cell in the minimap for ``global_map_mode``
+        ``"overlay"`` and ``"image"``.  Default ``8``.
     """
 
     metadata = {"render_modes": ["human", "rgb_array"], "render_fps": 10}
@@ -151,6 +193,8 @@ class ModularMazeEnv(gym.Env):
         show_score: bool = False,
         start_pos_mode: str = "fixed",
         terminate_on_all_safes_opened: bool = True,
+        global_map_mode: Optional[str] = None,
+        map_cell_size: int = 8,
     ) -> None:
         super().__init__()
 
@@ -192,6 +236,22 @@ class ModularMazeEnv(gym.Env):
                 f"start_pos_mode must be 'fixed' or 'random_in_room'; "
                 f"got '{start_pos_mode}'"
             )
+        if global_map_mode not in (None, "overlay", "image", "onehot", "beside"):
+            raise ValueError(
+                f"global_map_mode must be None, 'overlay', 'image', 'onehot', or 'beside'; "
+                f"got '{global_map_mode}'"
+            )
+        _pixel_obs_modes = ("pixels", "room_pixels", "both")
+        if global_map_mode == "overlay" and obs_mode not in _pixel_obs_modes:
+            raise ValueError(
+                f"global_map_mode='overlay' requires a pixel-producing obs_mode "
+                f"('pixels', 'room_pixels', 'both'); got obs_mode='{obs_mode}'"
+            )
+        if global_map_mode == "beside" and obs_mode != "room_pixels":
+            raise ValueError(
+                f"global_map_mode='beside' requires obs_mode='room_pixels'; "
+                f"got obs_mode='{obs_mode}'"
+            )
 
         self.max_steps = max_steps
         self.step_reward = step_reward
@@ -202,6 +262,8 @@ class ModularMazeEnv(gym.Env):
         self.show_score = show_score
         self.start_pos_mode = start_pos_mode
         self.terminate_on_all_safes_opened = terminate_on_all_safes_opened
+        self.global_map_mode = global_map_mode
+        self._map_cell_size = map_cell_size
 
         # ------------------------------------------------------------------
         # Derived constants (fixed across episodes)
@@ -220,6 +282,7 @@ class ModularMazeEnv(gym.Env):
         # ------------------------------------------------------------------
         self._compute_rooms()
         self._compute_room_bboxes()
+        self._compute_room_map_positions()
 
         # ------------------------------------------------------------------
         # Episode state (initialised in reset())
@@ -292,7 +355,7 @@ class ModularMazeEnv(gym.Env):
 
         # ---- pixels ----
         self._obs_cell_size = 32
-        self._obs_status_height = 40
+        self._obs_status_height = 40 if show_score else 0
         cs = self._obs_cell_size
         sh = self._obs_status_height
         pixel_h = grid_shape[0] * cs + sh
@@ -327,20 +390,52 @@ class ModularMazeEnv(gym.Env):
                 "current_room": spaces.Discrete(n_rooms + 1),
             })
 
+        # ---- global_map_mode auxiliary spaces ----
+        mcs = map_cell_size
+        map_img_h = self._map_rows * mcs
+        map_img_w = self._map_cols * mcs
+        map_image_space: spaces.Space = spaces.Box(
+            low=0, high=255, shape=(map_img_h, map_img_w, 3), dtype=np.uint8
+        )
+        room_onehot_space: spaces.Space = spaces.Box(
+            low=0.0, high=1.0, shape=(max(self._n_rooms, 1),), dtype=np.float32
+        )
+
         if obs_mode == "symbolic":
-            self.observation_space = symbolic_space
+            primary_space: spaces.Space = symbolic_space
         elif obs_mode == "symbolic_minimal":
-            self.observation_space = sym_min_space
+            primary_space = sym_min_space
         elif obs_mode == "pixels":
-            self.observation_space = pixel_space
+            primary_space = pixel_space
         elif obs_mode == "room_pixels":
-            self.observation_space = room_pixel_space
+            primary_space = room_pixel_space
         elif obs_mode == "macro":
-            self.observation_space = macro_space
+            primary_space = macro_space
         else:  # "both"
-            self.observation_space = spaces.Dict({
+            primary_space = spaces.Dict({
                 "pixels": pixel_space,
                 "symbolic": symbolic_space,
+            })
+
+        if global_map_mode is None or global_map_mode == "overlay":
+            # "overlay" burns the map into the pixel image — space shape unchanged
+            self.observation_space = primary_space
+        elif global_map_mode == "image":
+            self.observation_space = spaces.Dict({
+                "obs": primary_space,
+                "map_image": map_image_space,
+            })
+        elif global_map_mode == "beside":
+            # Map is placed to the right of the room obs; heights are padded to match.
+            beside_h = max(room_pixel_h, map_img_h)
+            beside_w = room_pixel_w + map_img_w
+            self.observation_space = spaces.Box(
+                low=0, high=255, shape=(beside_h, beside_w, 3), dtype=np.uint8
+            )
+        else:  # "onehot"
+            self.observation_space = spaces.Dict({
+                "obs": primary_space,
+                "room_onehot": room_onehot_space,
             })
 
         # ------------------------------------------------------------------
@@ -600,20 +695,37 @@ class ModularMazeEnv(gym.Env):
 
     def _get_observation(self) -> Any:
         if self.obs_mode == "symbolic":
-            return self._symbolic_obs()
+            primary = self._symbolic_obs()
         elif self.obs_mode == "symbolic_minimal":
-            return self._minimal_obs()
+            primary = self._minimal_obs()
         elif self.obs_mode == "pixels":
-            return self._pixel_obs()
+            primary = self._pixel_obs()
         elif self.obs_mode == "room_pixels":
-            return self._room_pixel_obs()
+            primary = self._room_pixel_obs()
         elif self.obs_mode == "macro":
-            return self._macro_obs()
+            primary = self._macro_obs()
         else:
-            return {
+            primary = {
                 "pixels": self._pixel_obs(),
                 "symbolic": self._symbolic_obs(),
             }
+
+        if self.global_map_mode is None:
+            return primary
+        elif self.global_map_mode == "overlay":
+            # Burn minimap into the pixel image (primary is always pixel-based here)
+            if isinstance(primary, dict):
+                # "both" mode: overlay on the "pixels" key
+                result = dict(primary)
+                result["pixels"] = self._overlay_map_on_pixels(primary["pixels"])
+                return result
+            return self._overlay_map_on_pixels(primary)
+        elif self.global_map_mode == "image":
+            return {"obs": primary, "map_image": self._build_map_image()}
+        elif self.global_map_mode == "beside":
+            return self._beside_map_on_pixels(primary)
+        else:  # "onehot"
+            return {"obs": primary, "room_onehot": self._room_onehot()}
 
     # ---- symbolic --------------------------------------------------------
 
@@ -994,6 +1106,49 @@ class ModularMazeEnv(gym.Env):
             self._room_w = self._base_layout.width
 
     # ======================================================================
+    # Room minimap positions (used by global_map_mode)
+    # ======================================================================
+
+    def _compute_room_map_positions(self) -> None:
+        """Determine the 2-D grid position of each room in the minimap.
+
+        Rooms are projected onto a compact integer grid by dividing their
+        bounding-box centres by the (maximum) room dimensions.
+
+        Stores
+        ------
+        _map_positions : dict mapping room_id -> (map_row, map_col)
+        _map_rows      : int — number of rows in the minimap grid
+        _map_cols      : int — number of columns in the minimap grid
+        """
+        if not self._room_bboxes:
+            self._map_positions: Dict[int, Tuple[int, int]] = {}
+            self._map_rows = 1
+            self._map_cols = 1
+            return
+
+        room_h = max(self._room_h, 1)
+        room_w = max(self._room_w, 1)
+
+        raw: Dict[int, Tuple[int, int]] = {}
+        for rid, (min_r, max_r, min_c, max_c) in self._room_bboxes.items():
+            center_r = (min_r + max_r) / 2
+            center_c = (min_c + max_c) / 2
+            raw[rid] = (round(center_r / room_h), round(center_c / room_w))
+
+        all_gr = sorted(set(r for r, _ in raw.values()))
+        all_gc = sorted(set(c for _, c in raw.values()))
+        gr_to_idx = {gr: i for i, gr in enumerate(all_gr)}
+        gc_to_idx = {gc: i for i, gc in enumerate(all_gc)}
+
+        self._map_positions = {
+            rid: (gr_to_idx[gr], gc_to_idx[gc])
+            for rid, (gr, gc) in raw.items()
+        }
+        self._map_rows = len(all_gr)
+        self._map_cols = len(all_gc)
+
+    # ======================================================================
     # Macro observation
     # ======================================================================
 
@@ -1031,6 +1186,122 @@ class ModularMazeEnv(gym.Env):
             }
 
     # ======================================================================
+    # Global map helpers (used by global_map_mode)
+    # ======================================================================
+
+    def _get_current_room_safe(self) -> int:
+        """Return the agent's current room index.
+
+        When the agent is on a door cell (not assigned to any room), returns
+        the most recent valid room and updates ``_last_valid_room``.
+        """
+        room = self._cell_to_room.get(self._agent_pos)
+        if room is None:
+            return self._last_valid_room
+        self._last_valid_room = room
+        return room
+
+    def _build_map_image(self) -> np.ndarray:
+        """Build a small RGB image of the room layout (rooms at minimap resolution).
+
+        Each room is a solid ``map_cell_size × map_cell_size`` square.
+        The agent's current room is highlighted in cyan; other rooms are dark
+        grey; unoccupied grid slots are black.
+
+        Returns
+        -------
+        np.ndarray of shape ``(map_rows * map_cell_size, map_cols * map_cell_size, 3)``
+        """
+        mcs = self._map_cell_size
+        img = np.zeros((self._map_rows * mcs, self._map_cols * mcs, 3), dtype=np.uint8)
+        current_room = self._get_current_room_safe()
+
+        for rid, (gr, gc) in self._map_positions.items():
+            y1, y2 = gr * mcs, (gr + 1) * mcs
+            x1, x2 = gc * mcs, (gc + 1) * mcs
+            color = (0, 200, 255) if rid == current_room else (90, 90, 90)
+            img[y1:y2, x1:x2] = color
+
+        return img
+
+    def _overlay_map_on_pixels(self, pixels: np.ndarray) -> np.ndarray:
+        """Draw the minimap in the top-right corner of a pixel observation.
+
+        The map is placed inside the grid portion (above the status bar) with
+        a small padding and a 1-pixel dark border.
+
+        Parameters
+        ----------
+        pixels:
+            RGB array of shape ``(H, W, 3)``.
+
+        Returns
+        -------
+        A copy of ``pixels`` with the minimap burned in.
+        """
+        map_img = self._build_map_image()
+        mh, mw = map_img.shape[:2]
+        sh = self._obs_status_height
+        h, w = pixels.shape[:2]
+        grid_h = h - sh  # height of the grid region (excluding status bar)
+
+        pad = 3  # pixels from the corner edge
+        border = 1  # dark border around the minimap
+
+        y1 = pad
+        y2 = y1 + mh
+        x2 = w - pad
+        x1 = x2 - mw
+
+        # Only draw if the map fits inside the grid region
+        if y2 + border <= grid_h and x1 - border >= 0:
+            result = pixels.copy()
+            # Dark border rectangle
+            result[
+                y1 - border: y2 + border,
+                x1 - border: x2 + border,
+            ] = (20, 20, 20)
+            # Map content
+            result[y1:y2, x1:x2] = map_img
+            return result
+        return pixels
+
+    def _beside_map_on_pixels(self, pixels: np.ndarray) -> np.ndarray:
+        """Place the global map image to the right of the room pixel observation.
+
+        Both images are padded vertically with background colour to the same
+        height, then concatenated horizontally into a single array.
+        """
+        map_img = self._build_map_image()
+        ph, pw = pixels.shape[:2]
+        mh, mw = map_img.shape[:2]
+        out_h = max(ph, mh)
+        bg = np.array(self._COLORS["bg"], dtype=np.uint8)
+
+        if ph < out_h:
+            pad = np.full((out_h - ph, pw, 3), bg, dtype=np.uint8)
+            pixels = np.concatenate([pixels, pad], axis=0)
+
+        if mh < out_h:
+            pad = np.full((out_h - mh, mw, 3), bg, dtype=np.uint8)
+            map_img = np.concatenate([map_img, pad], axis=0)
+
+        return np.concatenate([pixels, map_img], axis=1)
+
+    def _room_onehot(self) -> np.ndarray:
+        """Return a one-hot float32 vector indicating the agent's current room.
+
+        Length is ``n_rooms``.  When the agent is on a door cell the last
+        valid room is used.  All zeros if there are no rooms.
+        """
+        n = max(self._n_rooms, 1)
+        vec = np.zeros(n, dtype=np.float32)
+        current = self._get_current_room_safe()
+        if 0 <= current < n:
+            vec[current] = 1.0
+        return vec
+
+    # ======================================================================
     # Rendering
     # ======================================================================
 
@@ -1043,9 +1314,12 @@ class ModularMazeEnv(gym.Env):
             return None
         elif self.render_mode == "rgb_array":
             try:
-                return self._render_pygame_surface()
+                frame = self._render_pygame_surface()
             except Exception:
-                return self._render_numpy_fallback()
+                frame = self._render_numpy_fallback()
+            if self.global_map_mode == "overlay":
+                frame = self._overlay_map_on_pixels(frame)
+            return frame
         return None
 
     # ---- ASCII -----------------------------------------------------------

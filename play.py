@@ -112,8 +112,24 @@ def parse_args():
         help="Add irrelevant elements to rooms in procedural generation.",
     )
     parser.add_argument(
+        "--procgen-method",
+        choices=["bsp", "grid"],
+        default="bsp",
+        metavar="METHOD",
+        help="Procgen algorithm: 'bsp' (default) produces variable-sized rooms;"
+             " 'grid' produces equal-sized rooms (required for --partial-obs).",
+    )
+    parser.add_argument(
         "--seed", type=int, default=None, metavar="S",
         help="RNG seed for procedural generation.",
+    )
+    parser.add_argument(
+        "--room-h", type=int, default=9, metavar="N",
+        help="Room height in cells including walls, for --procgen-method grid (default: 9).",
+    )
+    parser.add_argument(
+        "--room-w", type=int, default=11, metavar="N",
+        help="Room width in cells including walls, for --procgen-method grid (default: 11).",
     )
     parser.add_argument(
         "--posner", action="store_true", help="Enable Posner cueing mode (GridWorldEnv only)"
@@ -179,6 +195,23 @@ def parse_args():
         "--partial-obs",
         action="store_true",
         help="Partial observability: show only the current room (ModularMazeEnv only)",
+    )
+    parser.add_argument(
+        "--global-map",
+        choices=["overlay", "image", "onehot", "beside"],
+        default=None,
+        metavar="MODE",
+        help="Add a global room-level map to the observation: 'overlay' draws it in the"
+             " corner of the pixel view, 'beside' places it to the right of the room obs"
+             " (requires --partial-obs), 'image' adds a separate map image, 'onehot'"
+             " adds a one-hot room vector (ModularMazeEnv only).",
+    )
+    parser.add_argument(
+        "--map-cell-size",
+        type=int,
+        default=8,
+        metavar="PX",
+        help="Pixel size of each room cell in the global map (default: 8).",
     )
     return parser.parse_args()
 
@@ -311,12 +344,22 @@ def main():
         sys.exit(1)
 
     if args.procgen:
-        from gridworld_env.procgen import generate_world
-        layout_obj = generate_world(
-            n_rooms=args.n_rooms,
-            distractor=args.distractor,
-            seed=args.seed,
-        )
+        if args.procgen_method == "grid":
+            from gridworld_env.procgen import generate_world_grid
+            layout_obj = generate_world_grid(
+                n_rooms=args.n_rooms,
+                distractor=args.distractor,
+                seed=args.seed,
+                room_h=args.room_h,
+                room_w=args.room_w,
+            )
+        else:
+            from gridworld_env.procgen import generate_world
+            layout_obj = generate_world(
+                n_rooms=args.n_rooms,
+                distractor=args.distractor,
+                seed=args.seed,
+            )
         use_partial = args.partial_obs
         obs_mode = "room_pixels" if use_partial else "pixels"
         env = ModularMazeEnv(
@@ -326,6 +369,8 @@ def main():
             obs_mode=obs_mode,
             render_mode="rgb_array" if not use_partial else None,
             show_score=False,
+            global_map_mode=args.global_map,
+            map_cell_size=args.map_cell_size,
         )
         caption = f"GridWorld — procgen {args.n_rooms} rooms"
         is_modular = True
@@ -345,6 +390,8 @@ def main():
                 obs_mode=obs_mode,
                 render_mode="rgb_array" if not use_partial else None,
                 show_score=False,
+                global_map_mode=args.global_map,
+                map_cell_size=args.map_cell_size,
             )
             help_lines = MODULAR_HELP
         else:
