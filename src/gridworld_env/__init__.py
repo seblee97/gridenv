@@ -10,6 +10,7 @@ from gridworld_env.modular_layout import (
     parse_modular_layout_file,
     parse_modular_layout_string,
 )
+from gridworld_env.env_distribution import LayoutDistribution, LayoutVariant, apply_variant, randomize_layout
 from gridworld_env.modular_maze import ModularCellType, ModularMazeEnv
 from gridworld_env.modular_objects import ModularKey, Safe, SimpleDoor
 from gridworld_env.objects import Door, Key, KeyColor, Reward
@@ -36,6 +37,11 @@ __all__ = [
     "KeyColor",
     "TaskConfig",
     "TaskSequenceWrapper",
+    # Environment distribution (randomized object positions)
+    "LayoutDistribution",
+    "LayoutVariant",
+    "apply_variant",
+    "randomize_layout",
     # Modular Maze environment
     "ModularMazeEnv",
     "ModularLayout",
