@@ -195,6 +195,8 @@ class ModularMazeEnv(gym.Env):
         terminate_on_all_safes_opened: bool = True,
         global_map_mode: Optional[str] = None,
         map_cell_size: int = 8,
+        pixel_render_style: str = "game",
+        obs_cell_size: int = 8,
     ) -> None:
         super().__init__()
 
@@ -354,7 +356,11 @@ class ModularMazeEnv(gym.Env):
             sym_min_space = spaces.Dict(min_dict)
 
         # ---- pixels ----
-        self._obs_cell_size = 32
+        assert pixel_render_style in ("game", "raw"), (
+            f"pixel_render_style must be 'game' or 'raw'; got '{pixel_render_style}'"
+        )
+        self._pixel_render_style = pixel_render_style
+        self._obs_cell_size = obs_cell_size
         self._obs_status_height = 40 if show_score else 0
         cs = self._obs_cell_size
         sh = self._obs_status_height
@@ -801,9 +807,17 @@ class ModularMazeEnv(gym.Env):
     # ---- pixel -----------------------------------------------------------
 
     def _pixel_obs(self) -> np.ndarray:
+        if self._pixel_render_style == "raw":
+            return self._render_numpy_fallback()
         try:
             return self._render_pygame_surface()
-        except Exception:
+        except Exception as e:
+            import warnings
+            warnings.warn(
+                f"pygame rendering failed ({e!r}), falling back to numpy. "
+                "Set pixel_render_style='raw' to suppress this warning.",
+                stacklevel=2,
+            )
             return self._render_numpy_fallback()
 
     # ---- room_pixels -----------------------------------------------------

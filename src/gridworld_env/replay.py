@@ -21,8 +21,20 @@ def create_pixel_env(
     room_h: int = 9,
     room_w: int = 11,
     seq_len: int = 150,
+    pixel_render_style: str = "game",
+    obs_cell_size: int = 8,
 ) -> ModularMazeEnv:
-    """Create a ``ModularMazeEnv`` configured for pixel rendering."""
+    """Create a ``ModularMazeEnv`` configured for pixel rendering.
+
+    Parameters
+    ----------
+    pixel_render_style:
+        ``"game"`` — pygame shapes (keys with bow/shaft, safes with lock
+        circles, materials as diamonds).  Falls back to ``"raw"`` if pygame
+        is unavailable.
+        ``"raw"`` — minimal numpy rendering with solid coloured squares for
+        all objects.
+    """
     layout = generate_world_grid(
         n_rooms=n_rooms, room_h=room_h, room_w=room_w,
         distractor=False, seed=layout_seed,
@@ -33,6 +45,8 @@ def create_pixel_env(
         global_map_mode="image",
         max_steps=seq_len + 10,
         terminate_on_all_safes_opened=False,
+        pixel_render_style=pixel_render_style,
+        obs_cell_size=obs_cell_size,
     )
 
 
